@@ -3,7 +3,7 @@ import networkx as nx
 from typing import List, Tuple
 from shapely.geometry import Point
 
-from src.utils.constants import TARGET_HEIGHT
+from node_labeling.utils.constants import TARGET_HEIGHT
 
 def normalize_positions(G: nx.Graph) -> float:
     '''

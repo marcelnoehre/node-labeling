@@ -6,11 +6,11 @@ import networkx as nx
 
 from shapely.geometry import LineString, Point, Polygon
 
-from src.utils.constants import NODE_RADIUS
-from src.models.anchor import Anchor
+from node_labeling.utils.constants import NODE_RADIUS
+from node_labeling.models.anchor import Anchor
 
 if TYPE_CHECKING:
-    from src.models.label_candidate import LabelCandidate
+    from node_labeling.models.label_candidate import LabelCandidate
 
 def pad_overlap(a: LabelCandidate, b: LabelCandidate) -> bool:
     '''

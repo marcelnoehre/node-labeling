@@ -5,12 +5,12 @@ import networkx as nx
 from shapely import Polygon, Point, LineString, box
 from typing import Dict, List
 
-from src.utils.graph_lattice import GraphLattice
-from src.models.anchor import AnchorType
-from src.models.label_candidate import LabelCandidate
-from src.topology.faces import node_faces
-from src.filter.rules import *
-from src.filter.matching import *
+from node_labeling.utils.graph_lattice import GraphLattice
+from node_labeling.models.anchor import AnchorType
+from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.topology.faces import node_faces
+from node_labeling.filter.rules import *
+from node_labeling.filter.matching import *
 
 def restrict_outer_node_candidates(
     G: nx.Graph,

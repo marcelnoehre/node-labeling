@@ -3,10 +3,10 @@ import networkx as nx
 
 from typing import Dict, List
 
-from src.utils.constants import *
-from src.models.anchor import AnchorType, Anchor
-from src.models.label_candidate import LabelCandidate
-from src.utils.geometry import bbox_corners
+from node_labeling.utils.constants import *
+from node_labeling.models.anchor import AnchorType, Anchor
+from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.utils.geometry import bbox_corners
 
 def _compute_overflow_candidate(G: nx.Graph, initial_candidate: LabelCandidate) -> LabelCandidate:
     '''

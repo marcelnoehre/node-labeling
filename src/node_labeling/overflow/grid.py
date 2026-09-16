@@ -7,12 +7,12 @@ from shapely import unary_union
 from shapely.geometry import Polygon
 from shapely.prepared import prep
 
-from src.utils.config import Config
-from src.models.label_candidate import LabelCandidate
-from src.models.label_type import LabelType
-from src.models.anchor import AnchorType
-from src.utils.geometry import *
-from src.utils.constants import *
+from node_labeling.utils.config import Config
+from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.models.label_type import LabelType
+from node_labeling.models.anchor import AnchorType
+from node_labeling.utils.geometry import *
+from node_labeling.utils.constants import *
 
 def _generate_candidates(
         lid: int,

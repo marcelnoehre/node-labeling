@@ -3,9 +3,9 @@ from itertools import combinations
 from collections import defaultdict
 from typing import Dict, List, Set, Tuple
 
-from src.models.anchor import AnchorType
-from src.models.label_candidate import LabelCandidate
-from src.utils.geometry import pad_overlap
+from node_labeling.models.anchor import AnchorType
+from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.utils.geometry import pad_overlap
 
 def build_conflict_map(
         label_candidates: Dict[int, List[LabelCandidate]],

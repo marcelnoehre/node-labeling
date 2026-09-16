@@ -1,5 +1,5 @@
 from enum import Enum
-from src.models.anchor import AnchorType
+from node_labeling.models.anchor import AnchorType
 
 from typing import List
 

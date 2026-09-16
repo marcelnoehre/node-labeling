@@ -8,10 +8,10 @@ from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from typing import Dict, List, Tuple
 
-from src.utils.constants import *
-from src.models.anchor import AnchorType
-from src.models.label_type import LabelType
-from src.models.label_candidate import LabelCandidate
+from node_labeling.utils.constants import *
+from node_labeling.models.anchor import AnchorType
+from node_labeling.models.label_type import LabelType
+from node_labeling.models.label_candidate import LabelCandidate
 
 def _trim_figure(fig: Figure, ax: Axes) -> None:
     '''

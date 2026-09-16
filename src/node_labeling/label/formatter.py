@@ -10,9 +10,9 @@ matplotlib.rcParams.update({
     "text.latex.preamble": r"\usepackage{amsmath}"
 })
 
-from src.utils.config import Config
-from src.utils.constants import *
-from src.models.label_type import LabelType
+from node_labeling.utils.config import Config
+from node_labeling.utils.constants import *
+from node_labeling.models.label_type import LabelType
 
 def measure_ink_mm(text: str) -> Tuple[float, float]:
     '''

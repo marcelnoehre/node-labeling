@@ -3,13 +3,13 @@ import networkx as nx
 
 from typing import List, Dict
 
-from src.utils.config import Config
-from src.utils.constants import *
-from src.utils.graph_lattice import GraphLattice
-from src.models.anchor import AnchorType, Anchor
-from src.models.label_type import LabelType
-from src.models.label_candidate import LabelCandidate
-from src.label.formatter import *
+from node_labeling.utils.config import Config
+from node_labeling.utils.constants import *
+from node_labeling.utils.graph_lattice import GraphLattice
+from node_labeling.models.anchor import AnchorType, Anchor
+from node_labeling.models.label_type import LabelType
+from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.label.formatter import *
 
 def _compute_label_candidates(
         G: nx.Graph,

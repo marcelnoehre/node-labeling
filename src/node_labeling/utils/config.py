@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from src.models.label_type import LabelType
+from node_labeling.models.label_type import LabelType
 
 @dataclass
 class Config:
@@ -7,7 +7,6 @@ class Config:
     plot: bool = False
     runtime: bool = True
     # data
-    file: str = 'forum_romanum'
     label_config = {
         LabelType.GENERAL: True,
         LabelType.EXTENT:  True,

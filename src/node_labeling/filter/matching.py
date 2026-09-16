@@ -1,8 +1,8 @@
 from typing import Dict, List, Tuple
-from src.models.anchor import AnchorType
-from src.models.label_candidate import LabelCandidate
-from src.utils.geometry import pad_overlap
-from src.filter.rules import *
+from node_labeling.models.anchor import AnchorType
+from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.utils.geometry import pad_overlap
+from node_labeling.filter.rules import *
 
 def connected_components(
         label_candidates: Dict[int, List[LabelCandidate]],

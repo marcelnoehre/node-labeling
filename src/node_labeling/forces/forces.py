@@ -7,10 +7,10 @@ from shapely import unary_union
 from shapely.geometry import Polygon, Point, LineString
 from shapely.ops import nearest_points
 
-from src.models.label_type import LabelType
-from src.models.label_candidate import LabelCandidate
-from src.utils.geometry import *
-from src.utils.config import Config
+from node_labeling.models.label_type import LabelType
+from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.utils.geometry import *
+from node_labeling.utils.config import Config
 
 def optimize_overflow_labels(
     G: nx.Graph, 

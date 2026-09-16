@@ -3,9 +3,9 @@ import numpy as np
 from typing import Tuple
 from dataclasses import dataclass
 
-from src.utils.geometry import bbox_corners
-from src.models.anchor import Anchor, AnchorType
-from src.models.label_type import LabelType
+from node_labeling.utils.geometry import bbox_corners
+from node_labeling.models.anchor import Anchor, AnchorType
+from node_labeling.models.label_type import LabelType
 
 @dataclass
 class LabelCandidate:

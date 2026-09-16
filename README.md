@@ -1,10 +1,23 @@
-# Graph Labeling
+# Node Labeling
 This repository implements a two-phase algorithm for labeling line diagrams of ordered sets.
 
 ## Usage
+
+### Install via PyPI
+Install the package from [PyPI](https://pypi.org/project/node-labeling/) using pip.
+
+```bash
+pip install node-labeling
+```
+
+Execute the layout generation using the `node-labeling` command.
+```bash
+node-labeling
+```
+
+### Install from source
 Clone the repository and initialize the environment. uv will automatically create a virtual
-environment and sync dependencies based on the pyproject.toml. `uv` will automatically create a
-virtual environment.
+environment and sync dependencies based on the pyproject.toml.
 
 ```bash
 uv sync
@@ -12,21 +25,51 @@ uv sync
 
 Execute the layout generation using uv run to ensure the correct environment context.
 ```bash
-uv run python main.py
+uv run node-labeling
 ```
 
-The script will label the file stated in the `utils/config.py` file. The file name has to match
-one of the `.graphml` files in the `/data` directory. Each node needs `x`/`y` position data, and
-optionally `extent`/`intent` label data (`;`-separated names), which can be embedded with
-`scripts/label_graphml.py`.
+The script will prompt you for a path to a `.graphml` file. Each node needs `x`/`y` position data,
+and optionally `general` data as a plain string and `extent`/`intent` label data (`;`-separated
+names).
+To export the final layout to a PDF add the `--export` flag.
+```bash
+uv run node-labeling --export
+```
+The `--export` flag also works with the PyPI install:
+```bash
+node-labeling --export
+```
+
+### Use as a library
+Node Labeling can also be called directly from Python via `node_labeling.label`.
+
+```python
+from node_labeling import label
+
+# graphml is a path to a .graphml file
+labels = label('path/to/graph.graphml')
+```
+
+By default `label` returns the final label placement for every node as a dict mapping label id to
+`LabelCandidate`. Pass `export=True` to instead write the final layout to a PDF in `figs/`.
+```python
+label('path/to/graph.graphml', export=True)
+```
+
+Pass a `Config` instance to override any parameter listed below.
+```python
+from node_labeling import label
+from node_labeling.utils.config import Config
+
+labels = label('path/to/graph.graphml', cfg=Config(top_k=200))
+```
 
 ## Configuration
 | Category | Parameter | Description |
 | :--- | :--- | :--- |
 | **Dev Mode** | `plot` | Whether to plot intermediate steps |
 | | `runtime` | Whether to display runtime information |
-| **Data** | `file` | Input file name |
-| | `label_config` | Label configuration |
+| **Data** | `label_config` | Label configuration |
 | **Visualize** | `font_size` | Font size for labels |
 | | `k_rows` | Number of rows for layout |
 | | `max_row_chars` | Maximum characters per row |
