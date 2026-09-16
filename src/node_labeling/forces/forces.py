@@ -12,6 +12,12 @@ from node_labeling.models.label_candidate import LabelCandidate
 from node_labeling.utils.geometry import *
 from node_labeling.utils.config import Config
 
+def cross2d(a: np.ndarray, b: np.ndarray) -> float:
+    '''
+    Z-component of the 3D cross product of two 2D vectors.
+    '''
+    return a[0] * b[1] - a[1] * b[0]
+
 def optimize_overflow_labels(
     G: nx.Graph, 
     label_candidates: Dict[int, List[LabelCandidate]], 
@@ -89,7 +95,7 @@ def optimize_overflow_labels(
 
                     ink_center = np.array([ink.centroid.x, ink.centroid.y])
                     vec_to_ink = ink_center - drawing_centroid
-                    side = np.cross(radial_unit, vec_to_ink / (np.linalg.norm(vec_to_ink) + 1e-6))
+                    side = cross2d(radial_unit, vec_to_ink / (np.linalg.norm(vec_to_ink) + 1e-6))
                     slide_dir = tangent_vec if side < 0 else -tangent_vec
 
                     mag = (threshold - dist_to_ink) * cfg.w_inner_proximity
@@ -110,7 +116,7 @@ def optimize_overflow_labels(
                     tangent_vec = np.array([-radial_unit[1], radial_unit[0]])
 
                     vec_to_other = np.array(o_ol.center) - drawing_centroid
-                    side = np.cross(radial_unit, vec_to_other / (np.linalg.norm(vec_to_other) + 1e-6))
+                    side = cross2d(radial_unit, vec_to_other / (np.linalg.norm(vec_to_other) + 1e-6))
                     slide_dir = tangent_vec if side < 0 else -tangent_vec
                     
                     mag = (threshold - dist) * cfg.w_global_proximity
@@ -169,7 +175,7 @@ def optimize_overflow_labels(
                 if dist_binder < binder_threshold:
                     obs_center = np.array([obstacle_centroid_pt.x, obstacle_centroid_pt.y])
                     vec_to_obs = obs_center - drawing_centroid
-                    side = np.cross(radial_unit, vec_to_obs / (np.linalg.norm(vec_to_obs) + 1e-6))
+                    side = cross2d(radial_unit, vec_to_obs / (np.linalg.norm(vec_to_obs) + 1e-6))
                     slide_dir = tangent_vec if side < 0 else -tangent_vec
                     mag = (binder_threshold - dist_binder) * cfg.w_binder_dodge
                     force_vector += slide_dir * mag
@@ -190,7 +196,7 @@ def optimize_overflow_labels(
                 is_violating = (ol.label_type == LabelType.INTENT and min_y < node_pos[1]) or (ol.label_type == LabelType.EXTENT and max_y > node_pos[1])
                 if is_violating:
                     up_vec = np.array([0.0, 1.0])
-                    side = np.cross(radial_unit, up_vec)
+                    side = cross2d(radial_unit, up_vec)
                     direction_multiplier = 1.0 if ol.label_type == LabelType.INTENT else -1.0
                     slide_dir = tangent_vec if (side * direction_multiplier) > 0 else -tangent_vec
                     infringement = (node_pos[1] - min_y) if ol.label_type == LabelType.INTENT else (max_y - node_pos[1])
