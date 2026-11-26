@@ -3,12 +3,12 @@ import numpy as np
 import networkx as nx
 
 from shapely import Polygon, Point, LineString, box
+from shapely.strtree import STRtree
 from typing import Dict, List
 
 from node_labeling.utils.graph_lattice import GraphLattice
 from node_labeling.models.anchor import AnchorType
 from node_labeling.models.label_candidate import LabelCandidate
-from node_labeling.topology.faces import node_faces
 from node_labeling.filter.rules import *
 from node_labeling.filter.matching import *
 
@@ -113,43 +113,37 @@ def filter_candidates_by_nodes(
 
 def filter_candidates_by_edges(
         G: nx.Graph,
-        label_candidates: Dict[int, List[LabelCandidate]],
-        bounded_faces: List[List[int]]
+        label_candidates: Dict[int, List[LabelCandidate]]
 ) -> Dict[int, List[LabelCandidate]]:
     '''
-    Remove label candidates whose padding bounding box intersects with graph edges.
+    Remove label candidates whose (slightly buffered) ink bounding box intersects with a graph edge.
 
     Parameters
     ----------
     G : nx.Graph
-        graph containing the positions
+        planar graph containing the positions
     label_candidates : Dict[int, List[LabelCandidate]]
         active label candidates
-    bounded_faces : List[List[int]]
-        boundary walk of each bounded faces 
 
     Returns
     -------
     filtered_candidates : Dict[int, List[LabelCandidate]]
-        remaining label candidates
+        remaining label candidates (labels without candidates are kept with an empty list)
     '''
     filtered_candidates: Dict[int, List[LabelCandidate]] = {}
+    edge_tree = STRtree([LineString([G.nodes[u]['pos'], G.nodes[v]['pos']]) for u, v in G.edges()])
 
     for lid, candidates in label_candidates.items():
         if not candidates:
+            filtered_candidates[lid] = []
             continue
-        nid = candidates[0].node_id
-        edges = [
-            LineString([G.nodes[u]['pos'], G.nodes[v]['pos']])
-            for u, v in node_faces(G, nid, bounded_faces)
-        ]
 
         surviving = []
         for candidate in candidates:
             ibl, _, itr, _ = candidate.ink_bbox_corners
             ink_shape = box(ibl[0], ibl[1], itr[0], itr[1])
             pad_shape = ink_shape.buffer(0.01)
-            if not any(pad_shape.intersects(e) for e in edges):
+            if len(edge_tree.query(pad_shape, predicate='intersects')) == 0:
                 surviving.append(candidate)
 
         filtered_candidates[lid] = surviving
@@ -190,12 +184,27 @@ def filter_candidates_by_neighbor_direction(
         node_y = G.nodes[nid]['pos'][1]
         neighbors = list(lattice.children(nid)) + list(lattice.parents(nid))
 
-        has_top_left = any((G.nodes[nb]['pos'][0] < node_x and G.nodes[nb]['pos'][1] > node_y) for nb in neighbors)
-        has_bottom_left = any((G.nodes[nb]['pos'][0] < node_x and G.nodes[nb]['pos'][1] < node_y) for nb in neighbors)
-        has_top_right = any((G.nodes[nb]['pos'][0] > node_x and G.nodes[nb]['pos'][1] > node_y) for nb in neighbors)
-        has_bottom_right = any((G.nodes[nb]['pos'][0] > node_x and G.nodes[nb]['pos'][1] < node_y) for nb in neighbors)
+        eps = 1e-9
+        offsets = [(G.nodes[nb]['pos'][0] - node_x, G.nodes[nb]['pos'][1] - node_y) for nb in neighbors]
+        has_top_left = any(dx < -eps and dy > eps for dx, dy in offsets)
+        has_bottom_left = any(dx < -eps and dy < -eps for dx, dy in offsets)
+        has_top_right = any(dx > eps and dy > eps for dx, dy in offsets)
+        has_bottom_right = any(dx > eps and dy < -eps for dx, dy in offsets)
+        # neighbors straight above / below / left / right only block the anchor that points at them
+        has_top = any(abs(dx) <= eps and dy > eps for dx, dy in offsets)
+        has_bottom = any(abs(dx) <= eps and dy < -eps for dx, dy in offsets)
+        has_left = any(dx < -eps and abs(dy) <= eps for dx, dy in offsets)
+        has_right = any(dx > eps and abs(dy) <= eps for dx, dy in offsets)
 
         filter = []
+        if has_top:
+            filter.append(AnchorType.B)
+        if has_bottom:
+            filter.append(AnchorType.T)
+        if has_left:
+            filter.append(AnchorType.R)
+        if has_right:
+            filter.append(AnchorType.L)
         if has_top_left:
             filter.extend([AnchorType.B, AnchorType.R, AnchorType.BR])
         if has_top_right:
@@ -270,7 +279,7 @@ def filter_hyrid(label_candidates: Dict[int, List[LabelCandidate]]) -> Dict[int,
     placed_entries: List[Tuple[int, LabelCandidate]] = []
     filtered_candidates: Dict[int, List[LabelCandidate]] = {lid: [] for lid in label_candidates}
     for lid in sorted(filtered_candidates.keys(), key=lambda lid: chosen[lid].anchor.anchor_type.rank if lid in chosen else float('inf')):
-        for cand in sorted(label_candidates[lid], key=lambda c: c.anchor.anchor_type.rank):
+        for cand in sorted(label_candidates[lid], key=lambda c: (lid not in chosen or c != chosen[lid], c.anchor.anchor_type.rank)):
             if not any(p_lid != lid and pad_overlap(cand, p_cand) for p_cand, p_lid in placed_entries):
                 filtered_candidates[lid].append(cand)
                 placed_entries.append((cand, lid))

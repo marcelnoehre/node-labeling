@@ -90,9 +90,15 @@ def _generate_candidates(
     t = np.clip(((pts_3d - sa_3d) * sd_3d).sum(axis=2) / np.where(sl2_3d > 0, sl2_3d, 1.0), 0.0, 1.0)
     closest = sa_3d + t[:, :, None] * sd_3d
     dist2 = ((pts_3d - closest) ** 2).sum(axis=2)
-    min_dist = np.sqrt(dist2.min(axis=1))
+    nearest = dist2.argmin(axis=1)
+    rows = np.arange(len(nearest))
+    min_dist = np.sqrt(dist2[rows, nearest])
 
-    keep = (min_dist >= cfg.min_label_dist) & (min_dist <= cfg.max_label_dist)
+    away = pts_3d[:, 0, :] - closest[rows, nearest]
+    away_unit = away / np.where(min_dist > 0, min_dist, 1.0)[:, None]
+    box_reach = hw * np.abs(away_unit[:, 0]) + hh * np.abs(away_unit[:, 1])
+
+    keep = (min_dist >= cfg.min_label_dist) & (min_dist - box_reach <= cfg.max_label_dist)
     ex0 = cx_all - hw;  ey0 = cy_all - hh
     ex1 = cx_all + hw;  ey1 = cy_all + hh
     overlaps_poly_aabb = ~(
@@ -248,7 +254,7 @@ def grid_overflow_candidates(
     '''
     grid_candidates: Dict[int, List[Tuple[LabelCandidate, float]]] = {}
 
-    tasks: List[Tuple[LabelCandidate, float]] = []
+    tasks: List[Dict[str, Any]] = []
     for gap in gaps:
         if not gap['assigned']:
             continue
@@ -261,7 +267,7 @@ def grid_overflow_candidates(
         for nid in assigned:
             matches = [
                 (l_id, ol) for l_id, ol in overflow_candidates.items() 
-                if ol.node_id == nid
+                if ol.node_id == nid and ol.anchor.anchor_type == AnchorType.O
             ]
             matches.sort(key=lambda x: x[0])
             for lid, ol in matches:

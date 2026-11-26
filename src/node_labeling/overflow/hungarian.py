@@ -162,7 +162,7 @@ def _greedy_assignment(
     for lid in order:
         chosen = None
         for cand in candidates.get(lid, []):
-            cand_poly = Polygon(bbox_corners(cand[0].pad_bbox_corners))
+            cand_poly = Polygon(cand[0].pad_bbox_corners)
             if not any(cand_poly.intersects(pb) for pb in placed_bboxes):
                 chosen = cand
                 break
@@ -171,7 +171,7 @@ def _greedy_assignment(
             chosen = candidates[lid][0]
         
         if chosen:
-            chosen_poly = Polygon(bbox_corners(chosen[0].pad_bbox_corners))
+            chosen_poly = Polygon(chosen[0].pad_bbox_corners)
             placed_bboxes.append(chosen_poly)
         
         assignment[lid] = chosen
@@ -325,5 +325,9 @@ def hungarian_solver(
 
     except ImportError:
         assignment = _greedy_assignment(label_ids, candidates)
+
+    for lid in label_ids:
+        if assignment.get(lid) is None and candidates.get(lid):
+            assignment[lid] = candidates[lid][0]
 
     return _repair_overlaps(G, label_ids, candidates, assignment, cfg)

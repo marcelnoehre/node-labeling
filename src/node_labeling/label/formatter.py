@@ -81,7 +81,7 @@ def format_label_text(cfg: Config, plain_text: str, label_type: LabelType) -> st
     rows.append(str(' '.join(words[prev:])))
  
     formatted = [_format_row(cfg, r, label_type) for r in rows]
-    joined    = r' \\[-1pt] '.join(formatted)
+    joined    = f' {ROW_BREAK} '.join(formatted)
     return rf'\begin{{tabular}}{{@{{}}c@{{}}}}{joined}\end{{tabular}}'
 
 def _format_row(cfg: Config, row: str, label_type: LabelType) -> str:

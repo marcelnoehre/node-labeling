@@ -7,6 +7,7 @@ from shapely import unary_union
 from shapely.geometry import Polygon, Point, LineString
 from shapely.ops import nearest_points
 
+from node_labeling.models.anchor import Anchor, AnchorType
 from node_labeling.models.label_type import LabelType
 from node_labeling.models.label_candidate import LabelCandidate
 from node_labeling.utils.geometry import *
@@ -38,7 +39,7 @@ def optimize_overflow_labels(
         already placed candidates
     overflow_candidates: Dict[int, LabelCandidate], 
         placed overflow candidates
-    unbounded_ooverflow_candidatesverflow_labels: List[int],
+    unbounded_overflow_labels: List[int],
         overflow labels that are placed in the graph's exterior
     alpha_shape: List[int]
         boundary walk of the drawing
@@ -69,12 +70,14 @@ def optimize_overflow_labels(
         for nid in alpha_shape    
     ]
 
+    movable = [lid for lid in unbounded_overflow_labels if overflow_candidates[lid].anchor.anchor_type != AnchorType.O]
+
     # iterative force refinement
     for i in range(cfg.force_iterations):
-        pending_updates = {}
-        unbounded_overflow_labels.sort(key=lambda lid: Point(overflow_candidates[lid].center).distance(placed_union))
+        pending: Dict[int, LabelCandidate] = {}
+        movable.sort(key=lambda lid: Point(overflow_candidates[lid].center).distance(placed_union))
 
-        for lid in unbounded_overflow_labels:
+        for lid in movable:
             ol = overflow_candidates[lid]
             node_pos = np.array(G.nodes[ol.node_id]['pos'])
             current_center = np.array(ol.center)
@@ -103,7 +106,7 @@ def optimize_overflow_labels(
 
             # tangential shift
             threshold = max(ew, eh) * 0.5
-            for o_lid in unbounded_overflow_labels:
+            for o_lid in movable:
                 if lid == o_lid:
                     continue
                 o_ol = overflow_candidates[o_lid]
@@ -127,22 +130,19 @@ def optimize_overflow_labels(
             anchor_pos = np.array(ol.anchor.pos)
             binder = LineString([node_pos, anchor_pos])
 
-            intersect_result = alpha_polygon.boundary.intersection(binder)
-            if intersect_result.is_empty:
-                closest_pt = None
-            elif isinstance(intersect_result, Point):
-                closest_pt = intersect_result
-            else:
+            crossings = as_points(alpha_polygon.boundary.intersection(binder)) if binder.length > 0 else []
+            if crossings:
                 anchor_pt = Point(anchor_pos)
-                closest_pt = min(intersect_result.geoms, key=lambda p: p.distance(anchor_pt))
-
-            intersection_pos = np.array(closest_pt.coords[0])
+                closest_pt = min(crossings, key=lambda p: p.distance(anchor_pt))
+                intersection_pos = np.array(closest_pt.coords[0])
+            else:
+                intersection_pos = node_pos
 
             gap_vec = anchor_pos - intersection_pos
             dist = np.linalg.norm(gap_vec) 
 
             displacement = dist - cfg.min_binder_length + 0.1
-            mag = (displacement**2) * cfg.w_spring
+            mag = np.sign(displacement) * (displacement**2) * cfg.w_spring
                
             unit_dir = gap_vec / (dist + 1e-6)
             force_vector -= unit_dir * mag
@@ -233,8 +233,8 @@ def optimize_overflow_labels(
                     valid = False # keep labels outside
 
             if valid:
-                if proposed_poly.intersects(placed_ink_union):
-                    valid = False # poly overlaps drawing
+                if proposed_poly.intersects(placed_union):
+                    valid = False # poly overlaps drawing or the padding of a placed label
 
             if valid:
                 for ink in ink_polys:
@@ -246,13 +246,13 @@ def optimize_overflow_labels(
                     valid = False
         
             if valid:
-                for o_lid in unbounded_overflow_labels:
+                for o_lid in movable:
                     if o_lid == lid:
                         continue
                 
-                    other = overflow_candidates[o_lid]
+                    other = pending.get(o_lid, overflow_candidates[o_lid])
                     other_poly_pad = Polygon(other.pad_bbox_corners)
-                    other_binder = LineString([other.anchor.pos, G.nodes[overflow_candidates[o_lid].node_id]['pos']])
+                    other_binder = LineString([other.anchor.pos, G.nodes[other.node_id]['pos']])
 
                     if proposed_poly.intersects(other_poly_pad):
                         valid = False
@@ -275,25 +275,18 @@ def optimize_overflow_labels(
                         break # anchor too close to overflow label
 
             if valid:
-                tmp_overflow_candidates = copy.deepcopy(overflow_candidates)
-                for o_lid, other_ol in overflow_candidates.items():
-                    if o_lid == lid:
-                        continue
-                
-                    if o_lid in pending_updates and pending_updates[o_lid] is not None:
-                        new_center, new_anchor = pending_updates[o_lid]
-                        tmp_overflow_candidates[o_lid].update_position(*new_center, new_anchor)
-
-                if not binding_line_valid(G, lid, proposed_anchor, label_candidates, tmp_overflow_candidates, overflow_candidates.keys(), [], True):
+                current_view = {**overflow_candidates, **pending}
+                if not binding_line_valid(G, lid, proposed_anchor, label_candidates, current_view, list(current_view.keys()), None, True):
                     valid = False # invalid binding line
 
             if valid:
-                pending_updates[lid] = (proposed_center, proposed_anchor)
+                moved = copy.deepcopy(ol)
+                moved.update_position(*proposed_center, proposed_anchor)
+                pending[lid] = moved
 
-        if not pending_updates:
+        if not pending:
             return overflow_candidates
 
-        for lid, (new_center, new_anchor) in pending_updates.items():
-            overflow_candidates[lid].update_position(*new_center, new_anchor)
+        overflow_candidates.update(pending)
 
     return overflow_candidates

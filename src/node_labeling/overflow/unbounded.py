@@ -1,5 +1,8 @@
 import time
+import warnings
 import networkx as nx
+
+from dataclasses import replace
 
 from typing import Dict, List
 from shapely import unary_union
@@ -10,6 +13,7 @@ from node_labeling.models.label_candidate import LabelCandidate
 from node_labeling.models.anchor import AnchorType
 from node_labeling.utils.geometry import *
 from node_labeling.overflow.grid import *
+from node_labeling.overflow.grid import _generate_candidates
 from node_labeling.overflow.hungarian import *
 
 def _adjust_anchors(
@@ -30,7 +34,7 @@ def _adjust_anchors(
         already placed candidates
     overflow_candidates: Dict[int, LabelCandidate], 
         placed overflow candidates
-    unbounded_ooverflow_candidatesverflow_labels: List[int],
+    unbounded_overflow_labels: List[int],
         overflow labels that are placed in the graph's exterior
     alpha_polygon: Polygon
         polygon of the drawing
@@ -47,6 +51,8 @@ def _adjust_anchors(
 
     for lid in sorted_unbounded_overflow_labels:
         ol = overflow_candidates[lid]
+        if ol.anchor.anchor_type == AnchorType.O:
+            continue
         cx, cy = ol.center
         anchor_candidates = [
             Anchor(at, *ol.center, *ol.pad_bbox_corners)
@@ -91,12 +97,17 @@ def _adjust_anchors(
             if any(tmp_exp_poly.intersects(Polygon(l[0].pad_bbox_corners)) for l in label_candidates.values() if l):
                 continue # overlaps with existing label
     
-            if any(tmp_exp_poly.intersects(Polygon(oc.exp_bbox_corners)) for oc in overflow_candidates.values() if oc.node_id != tmp_ol.node_id):
+            others = [
+                oc for o_lid, oc in overflow_candidates.items()
+                if o_lid != lid and oc.anchor.anchor_type != AnchorType.O
+            ]
+
+            if any(tmp_exp_poly.intersects(Polygon(oc.exp_bbox_corners)) for oc in others):
                 continue # overlaps another overflow label
  
             if any(
                 tmp_pad_poly.intersects(LineString([G.nodes[oc.node_id]['pos'], oc.anchor.pos])) 
-                for oc in overflow_candidates.values() if oc.node_id != tmp_ol.node_id
+                for oc in others
             ):
                 continue # overlaps with a binder of another overflow label
 
@@ -183,15 +194,30 @@ def unbounded_overflow_labels(
             key=lambda g: g['gap_size'],
             default=max(gaps, key=lambda g: g['gap_size'])
         )
-        best_gap['assigned'].append(ol.node_id)
+        if ol.node_id not in best_gap['assigned']:
+            best_gap['assigned'].append(ol.node_id)
 
     start_time = time.perf_counter()
     grid_candidates = grid_overflow_candidates(G, label_candidates, overflow_candidates, gaps, centroid, alpha_polygon, placed_union, placed_overflow, cfg)
+
+    for lid in [lid for lid, candidates in grid_candidates.items() if not candidates]:
+        relaxed_cfg = cfg
+        for _ in range(3):
+            relaxed_cfg = replace(relaxed_cfg, max_label_dist=relaxed_cfg.max_label_dist * 2)
+            grid_candidates[lid] = _generate_candidates(
+                lid, G, centroid, alpha_polygon, placed_union, placed_overflow,
+                label_candidates, overflow_candidates, relaxed_cfg
+            )
+            if grid_candidates[lid]:
+                break
     grid_duration = (time.perf_counter() - start_time) * 1000
     
     start_time = time.perf_counter()
     assignment = hungarian_solver(G, sorted(grid_candidates.keys()), grid_candidates, cfg)
     for lid, chosen in assignment.items():
+        if chosen is None:
+            warnings.warn(f'Label {lid} ({overflow_candidates[lid].text!r}) could not be placed and is drawn at its node')
+            continue
         overflow_candidates[lid] = chosen[0]
     hungarian_duration = (time.perf_counter() - start_time) * 1000
 

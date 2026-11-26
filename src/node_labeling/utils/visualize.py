@@ -4,7 +4,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from typing import Dict, List, Tuple
 
@@ -13,61 +12,64 @@ from node_labeling.models.anchor import AnchorType
 from node_labeling.models.label_type import LabelType
 from node_labeling.models.label_candidate import LabelCandidate
 
-def _trim_figure(fig: Figure, ax: Axes) -> None:
+def _ink_center(candidate: LabelCandidate) -> Tuple[float, float]:
     '''
-    Trim whitespace around the drawing by:
-        1. rasterizing the figure to an RGBA array
-        2. finding the bounding box of all non-white pixels
-        3. resizing the figure and shifting the axes
+    Center of the ink box, i.e. where the text has to be drawn.
 
     Parameters
     ----------
-    fig : Figure
-        the figure to trim
-    ax : Axes
-        the axes of the figure
+    candidate : LabelCandidate
+        label candidate
+
+    Returns
+    -------
+    center : Tuple[float, float]
+        center of the ink box
     '''
-    # 1. rasterize
-    fig.canvas.draw()
-    buf = fig.canvas.buffer_rgba()
-    rgba = np.frombuffer(buf, dtype=np.uint8).reshape(fig.canvas.get_width_height()[::-1] + (4,))
-    rgb = rgba[:, :, :3]
+    (x0, y0), _, (x1, y1), _ = candidate.ink_bbox_corners
+    return (x0 + x1) / 2.0, (y0 + y1) / 2.0
 
-    # 2. bbox if white px
-    is_content = np.any(rgb < 250, axis=2)
-    rows = np.any(is_content, axis=1)
-    cols = np.any(is_content, axis=0)
+def _content_bounds(
+        G: nx.Graph,
+        candidates: List[LabelCandidate],
+        colored_label_candidates: bool
+) -> Tuple[float, float, float, float]:
+    '''
+    Bounds of everything that is drawn: nodes (with their marker) and label boxes.
 
-    if not rows.any():
-        return
+    Parameters
+    ----------
+    G : nx.Graph
+        graph containing positions
+    candidates : List[LabelCandidate]
+        all drawn label, overflow and grid candidates
+    colored_label_candidates : bool
+        wether the pad and exp boxes are drawn as well
 
-    row_min, row_max = np.where(rows)[0][[0, -1]]
-    col_min, col_max = np.where(cols)[0][[0, -1]]
+    Returns
+    -------
+    bounds : Tuple[float, float, float, float]
+        (min_x, min_y, max_x, max_y) including the figure padding
+    '''
+    marker_radius = (np.sqrt(NODE_SIZE) / 2.0 + LINE_WIDTH / 2.0) * 25.4 / 72.0 / MM_PER_UNIT
+    xs, ys = [], []
+    for _, data in G.nodes(data=True):
+        x, y = data['pos']
+        xs += [x - marker_radius, x + marker_radius]
+        ys += [y - marker_radius, y + marker_radius]
 
-    # 3. resize
-    dpi = fig.get_dpi()
-    fig_w_px, fig_h_px = fig.canvas.get_width_height()
-    pad_px = int(round(0.05 * dpi))
-    col_min = max(0,        col_min - pad_px)
-    col_max = min(fig_w_px, col_max + pad_px)
-    row_min = max(0,        row_min - pad_px)
-    row_max = min(fig_h_px, row_max + pad_px)
-    new_w_in = (col_max - col_min) / dpi
-    new_h_in = (row_max - row_min) / dpi
-    ax_pos = ax.get_position()
-    ax_l_px = ax_pos.x0 * fig_w_px
-    ax_b_px = ax_pos.y0 * fig_h_px
-    ax_w_px = ax_pos.width  * fig_w_px
-    ax_h_px = ax_pos.height * fig_h_px
-    crop_b_px = fig_h_px - row_max
-    crop_l_px = col_min
-    new_ax_l = (ax_l_px - crop_l_px) / (col_max - col_min)
-    new_ax_b = (ax_b_px - crop_b_px) / (row_max - row_min)
-    new_ax_w = ax_w_px / (col_max - col_min)
-    new_ax_h = ax_h_px / (row_max - row_min)
+    for candidate in candidates:
+        boxes = [candidate.ink_bbox_corners]
+        if colored_label_candidates:
+            boxes += [candidate.pad_bbox_corners, candidate.exp_bbox_corners]
+        for corners in boxes:
+            xs += [corner[0] for corner in corners]
+            ys += [corner[1] for corner in corners]
+        xs.append(candidate.anchor.pos[0])
+        ys.append(candidate.anchor.pos[1])
 
-    fig.set_size_inches(new_w_in, new_h_in)
-    ax.set_position([new_ax_l, new_ax_b, new_ax_w, new_ax_h])
+    pad = FIGURE_PADDING_MM / MM_PER_UNIT
+    return min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad
 
 def _draw_candidate(
         ax: Axes,
@@ -105,7 +107,7 @@ def _draw_candidate(
         ax.scatter(*anchor_pos, color=color, s=30, zorder=10, alpha=0.9, clip_on=False)
 
     text_color = color if colored_label_candidates else 'black'
-    cx, cy = candidate.center
+    cx, cy = _ink_center(candidate)
 
     ax.text(
         cx, cy, candidate.text,
@@ -159,7 +161,7 @@ def _draw_overflow_candidate(
         ))
 
     if candidate.anchor.anchor_type != AnchorType.O:
-        ax.scatter(*candidate.anchor.pos, color='grey', s=5, zorder=6, alpha=0.8, clip_on=False)
+        ax.scatter(*candidate.anchor.pos, color='grey', s=BINDER_DOT_SIZE, linewidths=0, zorder=6, alpha=0.8, clip_on=False)
         nx_, ny = G.nodes[candidate.node_id]['pos']
         ax.plot(
             [candidate.anchor.pos[0], nx_], 
@@ -170,7 +172,7 @@ def _draw_overflow_candidate(
         )
 
     text_color = color if colored_label_candidates else 'black'
-    cx, cy = candidate.center
+    cx, cy = _ink_center(candidate)
 
     ax.text(
         cx, cy, candidate.text,
@@ -211,12 +213,49 @@ def plot_graph(
     '''
     Draw the graph and save to a PDF.
 
+    The figure is sized so that one normalized unit is exactly MM_PER_UNIT mm, which is the scale
+    the label boxes were measured for (text is rendered at a fixed point size).
+
     Parameters
     ----------
-    TODO
+    G : nx.Graph
+        planar graph containing normalized positions
+    nodes : List[int]
+        original (non-dummy) nodes
+    edges : List[Tuple[int, int]]
+        cover relations
+    output_path : str
+        path of the PDF
+    title : str
+        window title
+    intersections, show_intersections
+        edge crossings and wether to draw them
+    alpha_shape, show_alpha_shape
+        boundary walk of the alpha shape and wether to draw it
+    bounded_faces, areas, centroids, show_face_areas, show_face_sizes
+        bounded faces with their area (mm^2) and centroid, wether to draw them and their size
+    label_candidates, colored_label_candidates, show_legend
+        label candidates, wether to draw their boxes and anchors, wether to draw the anchor legend
+    overflow_candidates : Dict[int, LabelCandidate]
+        overflow labels
+    grid_candidates : Dict[int, List[Tuple[LabelCandidate, float]]]
+        grid candidates of the exterior labels
     '''
-    fig, ax = plt.subplots(figsize=(8, 6), dpi=DPI)
-    fig.canvas.manager.set_window_title(title)
+    drawn = (
+        [candidate for candidates in label_candidates.values() for candidate in candidates]
+        + list(overflow_candidates.values())
+        + [candidate for candidates in grid_candidates.values() for candidate, _ in candidates]
+    )
+    min_x, min_y, max_x, max_y = _content_bounds(G, drawn, colored_label_candidates)
+    width_in = (max_x - min_x) * MM_PER_UNIT / 25.4
+    height_in = (max_y - min_y) * MM_PER_UNIT / 25.4
+    show_colorbar = bool(show_face_areas and bounded_faces and areas)
+    total_width_in = width_in + (COLORBAR_WIDTH_IN if show_colorbar else 0.0)
+
+    fig = plt.figure(figsize=(total_width_in, height_in), dpi=DPI)
+    ax = fig.add_axes((0.0, 0.0, width_in / total_width_in, 1.0))
+    if fig.canvas.manager is not None:
+        fig.canvas.manager.set_window_title(title)
 
     ##### vertices #####
     for nid in nodes:
@@ -268,7 +307,11 @@ def plot_graph(
                 )
         sm = cm.ScalarMappable(cmap=CMAP, norm=plt.Normalize(min(areas), max(areas)))
         sm.set_array([])
-        cb = plt.colorbar(sm, ax=ax, shrink=0.8)
+        cax = fig.add_axes((
+            (width_in + 0.1) / total_width_in, 0.1,
+            0.15 / total_width_in, 0.8
+        ))
+        cb = fig.colorbar(sm, cax=cax)
         cb.set_label(r'Face area ($\mathrm{mm}^2$)', fontsize=16)
         cb.ax.tick_params(labelsize=14)
 
@@ -295,14 +338,10 @@ def plot_graph(
             for grid_candidate, _ in candidates:
                 _draw_overflow_candidate(G, ax, grid_candidate, colored_label_candidates)
 
-    xs = [G.nodes[nid]['pos'][0] for nid in G.nodes]
-    ys = [G.nodes[nid]['pos'][1] for nid in G.nodes]
-    ax.set_xlim(min(xs) - MARGIN, max(xs) + MARGIN)
-    ax.set_ylim(min(ys) - MARGIN, max(ys) + MARGIN)
+    ax.set_xlim(min_x, max_x)
+    ax.set_ylim(min_y, max_y)
     ax.set_aspect('equal', adjustable='box')
     ax.axis('off')
-    _trim_figure(fig, ax)
 
-    plt.savefig(output_path, format='pdf')
-    plt.close('all')
+    fig.savefig(output_path, format='pdf')
     plt.close(fig)

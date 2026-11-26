@@ -10,6 +10,7 @@ from node_labeling.models.anchor import AnchorType, Anchor
 from node_labeling.models.label_type import LabelType
 from node_labeling.models.label_candidate import LabelCandidate
 from node_labeling.label.formatter import *
+from node_labeling.utils.geometry import label_rows, label_padding
 
 def _compute_label_candidates(
         G: nx.Graph,
@@ -39,17 +40,15 @@ def _compute_label_candidates(
     if 'normalized_height' not in G.graph:
         raise ValueError('Normalize positions before computing label candidates')
     
-    mm_per_unit = PHYSICAL_HEIGHT_MM / G.graph['normalized_height']
-    units_per_mm = 1.0 / mm_per_unit
-
+    # everything below is in normalized units (1 unit = MM_PER_UNIT mm in the exported figure)
     ink_w_mm, ink_h_mm = measure_ink_mm(label_text)
-
-    rows = len(label_text.split(r'\\[-1pt]'))
-    padding = (ink_h_mm / rows - 0.1 * rows) * 0.5
+    ink_w = ink_w_mm / MM_PER_UNIT
+    ink_h = ink_h_mm / MM_PER_UNIT
+    padding = label_padding(ink_h, label_rows(label_text))
 
     # Inner half-extents (ink only, no padding)
-    half_iw = (ink_w_mm  * units_per_mm) / 2.0
-    half_ih = (ink_h_mm  * units_per_mm) / 2.0
+    half_iw = ink_w / 2.0
+    half_ih = ink_h / 2.0
 
     corner_multiplier = 1 / np.sqrt(2)
 
@@ -63,18 +62,15 @@ def _compute_label_candidates(
         is_right  = anchor in [AnchorType.R, AnchorType.TR, AnchorType.BR]
         is_corner = anchor not in [AnchorType.T, AnchorType.B, AnchorType.L, AnchorType.R]
         
-        s = corner_multiplier if is_corner else (1.0 / corner_multiplier)
+        s = corner_multiplier if is_corner else 1.0
 
         p_top    = (padding * s) if is_top else padding
         p_bottom = (padding * s) if is_bottom else padding
         p_left   = (padding * s) if is_left else padding
         p_right  = (padding * s) if is_right else padding
 
-        total_w_units = (ink_w_mm + p_left + p_right) * units_per_mm
-        total_h_units = (ink_h_mm + p_top + p_bottom) * units_per_mm
-
-        half_w = total_w_units / 2.0
-        half_h = total_h_units / 2.0
+        half_w = (ink_w + p_left + p_right) / 2.0
+        half_h = (ink_h + p_top + p_bottom) / 2.0
 
         offset_x = 0
         if is_left:
@@ -95,17 +91,17 @@ def _compute_label_candidates(
         ptr = (cx + half_w, cy + half_h)
         pbr, ptl = (ptr[0], pbl[1]), (pbl[0], ptr[1])
 
-        ink_cx = cx + ((p_left - p_right) * units_per_mm / 2.0)
-        ink_cy = cy + ((p_bottom - p_top) * units_per_mm / 2.0)
+        ink_cx = cx + (p_left - p_right) / 2.0
+        ink_cy = cy + (p_bottom - p_top) / 2.0
         
         ibl = (ink_cx - half_iw, ink_cy - half_ih)
         itr = (ink_cx + half_iw, ink_cy + half_ih)
         ibr, itl = (itr[0], ibl[1]), (ibl[0], itr[1])
 
-        exp_l = (padding * units_per_mm) if is_right else 0
-        exp_r = (padding * units_per_mm) if is_left else 0
-        exp_t = (padding * units_per_mm) if is_bottom else 0
-        exp_b = (padding * units_per_mm) if is_top else 0
+        exp_l = padding if is_right else 0
+        exp_r = padding if is_left else 0
+        exp_t = padding if is_bottom else 0
+        exp_b = padding if is_top else 0
 
         ebl = (pbl[0] - exp_l, pbl[1] - exp_b)
         etr = (ptr[0] + exp_r, ptr[1] + exp_t)
@@ -118,7 +114,7 @@ def _compute_label_candidates(
             ink_bbox_corners=(ibl, ibr, itr, itl),
             pad_bbox_corners=(pbl, pbr, ptr, ptl),
             exp_bbox_corners=(ebl, ebr, etr, etl),
-            center=(cx, cy),
+            center=(ink_cx, ink_cy),
             text=label_text
         ))
 

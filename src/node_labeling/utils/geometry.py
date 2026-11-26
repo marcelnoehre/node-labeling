@@ -1,13 +1,14 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING, Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import math
 import networkx as nx
 
 from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry.base import BaseGeometry
 
-from node_labeling.utils.constants import NODE_RADIUS
-from node_labeling.models.anchor import Anchor
+from node_labeling.utils.constants import NODE_RADIUS, MM_PER_UNIT, BINDER_DOT_SIZE, BINDER_DOT_GAP_MM, ROW_BREAK
+from node_labeling.models.anchor import Anchor, AnchorType
 
 if TYPE_CHECKING:
     from node_labeling.models.label_candidate import LabelCandidate
@@ -33,6 +34,42 @@ def pad_overlap(a: LabelCandidate, b: LabelCandidate) -> bool:
     (bx0, by0), _, (bx1, by1), _ = b.pad_bbox_corners
     
     return (ax0 + buffer < bx1 and ax1 - buffer > bx0 and ay0 + buffer < by1 and ay1 - buffer > by0)
+
+def as_points(geom: BaseGeometry) -> List[Point]:
+    '''
+    Flatten a shapely intersection geometry into the Points it is made of.
+
+    Two edges can be collinear and overlap along a shared sub-segment
+    (e.g. one edge's endpoints both lie on another edge), in which case
+    `LineString.intersection` returns a LineString/GeometryCollection
+    instead of a Point. This reduces any such geometry to the finite set
+    of points that bound it.
+
+    Parameters
+    ----------
+    geom : BaseGeometry
+        Result of `edge.intersection(other_edge)`
+
+    Returns
+    -------
+    List[Point]
+        Constituent points of the intersection
+    '''
+    if geom.is_empty:
+        return []
+    if geom.geom_type == 'Point':
+        return [geom]
+    if geom.geom_type == 'MultiPoint':
+        return list(geom.geoms)
+    if geom.geom_type in ('LineString', 'LinearRing'):
+        coords = list(geom.coords)
+        return [Point(coords[0]), Point(coords[-1])]
+    if geom.geom_type == 'MultiLineString' or geom.geom_type == 'GeometryCollection':
+        points = []
+        for part in geom.geoms:
+            points.extend(as_points(part))
+        return points
+    return []
 
 def bbox_corners(cx, cy, hx, hy):
     '''
@@ -60,6 +97,106 @@ def bbox_corners(cx, cy, hx, hy):
         (cx + hx, cy + hy), # TR
         (cx - hx, cy + hy), # TL
     )
+
+def label_rows(text: str) -> int:
+    '''
+    Number of rows of a formatted label.
+
+    Parameters
+    ----------
+    text : str
+        formatted LaTeX label
+
+    Returns
+    -------
+    rows : int
+        number of rows
+    '''
+    return len(text.split(ROW_BREAK))
+
+def label_padding(ink_h: float, rows: int) -> float:
+    '''
+    Padding between the ink box and the padded box of a label.
+    The formula is defined in mm, input and output are normalized units.
+
+    Parameters
+    ----------
+    ink_h : float
+        height of the ink box (normalized units)
+    rows : int
+        number of rows of the label
+
+    Returns
+    -------
+    padding : float
+        padding (normalized units)
+    '''
+    ink_h_mm = ink_h * MM_PER_UNIT
+    padding_mm = (ink_h_mm / rows - 0.1 * rows) * 0.5
+    return max(0.0, padding_mm) / MM_PER_UNIT
+
+def overflow_boxes(cx: float, cy: float, half_iw: float, half_ih: float, padding: float):
+    '''
+    Ink, padded and expanded box of an overflow label centered at (cx, cy).
+    Overflow labels are attached by a binder, so the padding is the same on every side.
+
+    Parameters
+    ----------
+    cx : float
+        x-coordinate of the ink box center
+    cy : float
+        y-coordinate of the ink box center
+    half_iw : float
+        half-width of the ink box
+    half_ih : float
+        half-height of the ink box
+    padding : float
+        label padding (see `label_padding`)
+
+    Returns
+    -------
+    ink, pad, exp : Tuple[corners, corners, corners]
+        bbox corners (BL, BR, TR, TL) of the three boxes
+    '''
+    exp_margin = padding * math.sqrt(2)
+    return (
+        bbox_corners(cx, cy, half_iw, half_ih),
+        bbox_corners(cx, cy, half_iw + padding, half_ih + padding),
+        bbox_corners(cx, cy, half_iw + exp_margin, half_ih + exp_margin),
+    )
+
+def binder_anchor(anchor_type: AnchorType, cx: float, cy: float, half_iw: float, half_ih: float, padding: float) -> Anchor:
+    '''
+    Final binder anchor of an overflow label: just outside the ink box, so the binder dot sits close to
+    the text without covering it. The dot center keeps the dot radius plus `BINDER_DOT_GAP_MM` to the ink box,
+    corner dots measured to the ink corner (diagonally). It never leaves the pad box, which stays the
+    reserved space of the label.
+
+    Parameters
+    ----------
+    anchor_type : AnchorType
+        side or corner of the label the binder attaches to
+    cx : float
+        x-coordinate of the ink box center
+    cy : float
+        y-coordinate of the ink box center
+    half_iw : float
+        half-width of the ink box
+    half_ih : float
+        half-height of the ink box
+    padding : float
+        label padding (see `label_padding`)
+
+    Returns
+    -------
+    anchor : Anchor
+        anchor on the ink box grown by the dot offset
+    '''
+    dot_radius_mm = math.sqrt(BINDER_DOT_SIZE) / 2.0 * 25.4 / 72.0
+    offset = min((dot_radius_mm + BINDER_DOT_GAP_MM) / MM_PER_UNIT, padding)
+    if anchor_type in (AnchorType.TL, AnchorType.TR, AnchorType.BL, AnchorType.BR):
+        offset /= math.sqrt(2)
+    return Anchor(anchor_type, cx, cy, *bbox_corners(cx, cy, half_iw + offset, half_ih + offset))
 
 def label_wh(corners: Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float], Tuple[float, float]]) -> Tuple[float, float]:
     '''
@@ -112,7 +249,7 @@ def binding_line_valid(
     label_candidates: Dict[int, List[LabelCandidate]],
     overflow_candidates: Dict[int, LabelCandidate],
     placed_overflow: List[int],
-    edges: List[Tuple[int, int]] = [],
+    edges: Optional[List[Tuple[int, int]]] = None,
     soft: bool = False,
     max_edge_crossings: int = -1
 ) -> bool:
@@ -133,7 +270,7 @@ def binding_line_valid(
         overflow candidates to be placed
     placed_overflow : List[Dict[int, Tuple[float, float], LineString]]
         already placed overflow candidates
-    edges : List[Tuple[int, int]] = []
+    edges : Optional[List[Tuple[int, int]]] = None
         forbidden edges of the graph
     soft : bool = False
         soft mode is less restrictive
@@ -188,7 +325,7 @@ def binding_line_valid(
         if binding_line.distance(Point(data['pos'])) < NODE_RADIUS:
             return False
     
-    for a, b in edges:
+    for a, b in edges or []:
         # binder to close to an forbidden
         if Point(anchor.pos).distance(LineString([G.nodes[a]['pos'], G.nodes[b]['pos']])) < NODE_RADIUS:
             return False

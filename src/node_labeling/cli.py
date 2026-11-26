@@ -42,6 +42,8 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
     '''
     init_time = time.perf_counter()
     cfg = cfg or Config()
+    if cfg.plot or export:
+        Path('figs').mkdir(exist_ok=True)
 
     lattice = GraphLattice(graphml)
     nodes = lattice.nodes
@@ -57,7 +59,7 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
         print(f"\033[1;36m[RUNTIME]\033[0m Planarize runtime: \033[1;32m{planarize_duration:.2f} ms\033[0m")
 
     # normalize positions
-    scale = normalize_positions(G)
+    normalize_positions(G)
     intersection_points = normalize_intersections(G, intersections)
     if cfg.plot:
         plot_graph(
@@ -77,7 +79,7 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
 
     # faces
     start_time = time.perf_counter()
-    alpha_shape, bounded_faces, areas, centroids = extract_faces(G, scale)
+    alpha_shape, bounded_faces, areas, centroids = extract_faces(G)
     topology_duration = (time.perf_counter() - start_time) * 1000
     if cfg.runtime:
         print(f"\033[1;36m[RUNTIME]\033[0m Compute topology: \033[1;32m{topology_duration:.2f} ms\033[0m")
@@ -149,7 +151,7 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
 
     # filter overlapping edges
     start_time = time.perf_counter()
-    label_candidates = filter_candidates_by_edges(G, label_candidates, bounded_faces)
+    label_candidates = filter_candidates_by_edges(G, label_candidates)
     filter_edge_duration = (time.perf_counter() - start_time) * 1000
     if cfg.runtime:
         print(f"\033[1;36m[RUNTIME]\033[0m Filter edge runtime: \033[1;32m{filter_edge_duration:.2f} ms\033[0m")
@@ -252,6 +254,9 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
     start_time = time.perf_counter()
     overflow_candidates = optimize_overflow_labels(G, label_candidates, overflow_candidates, unbounded, alpha_shape, cfg)
     force_duration = (time.perf_counter() - start_time) * 1000
+
+    for ol in overflow_candidates.values():
+        ol.tighten_anchor()
     if cfg.runtime:
         print(f"\033[1;36m[RUNTIME]\033[0m Force refinement runtime: \033[1;32m{force_duration:.2f} ms\033[0m")
     if cfg.plot:
@@ -270,7 +275,6 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
         print(f"\033[1;36m[RUNTIME]\033[0m Total runtime: \033[1;32m{total_duration:.2f} ms\033[0m")
 
     if export:
-        Path('figs').mkdir(exist_ok=True)
         plot_graph(
             G,
             nodes,

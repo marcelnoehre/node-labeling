@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Dict
+
 from node_labeling.models.label_type import LabelType
 
 @dataclass
@@ -7,11 +9,11 @@ class Config:
     plot: bool = False
     runtime: bool = True
     # data
-    label_config = {
+    label_config: Dict[LabelType, bool] = field(default_factory=lambda: {
         LabelType.GENERAL: True,
         LabelType.EXTENT:  True,
         LabelType.INTENT:  True
-    }
+    })
     # visualization
     font_size: str = r'\footnotesize'
     k_rows: int = 2

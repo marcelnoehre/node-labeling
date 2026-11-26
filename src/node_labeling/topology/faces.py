@@ -3,26 +3,26 @@ import numpy as np
 import networkx as nx
 
 from typing import List, Tuple, Set
-from shapely.geometry import Polygon
-from scipy.spatial import KDTree
+from shapely.geometry import MultiPoint, Polygon
+from scipy.spatial import KDTree, QhullError
 
-def _shoelace(G: nx.Graph, nodes: List[int], scale: float) -> float:
+from node_labeling.utils.constants import MM_PER_UNIT
+
+def _shoelace(G: nx.Graph, nodes: List[int]) -> float:
     '''
     Area of a polygon (shoelace)
 
     Parameters
     ----------
     G: nx.Graph
-        graph containing the positions
+        graph containing the normalized positions
     nodes: List[int]
         nodes spanning the polygon
-    scale: float
-        scale factor (mm)
 
     Returns
     -------
     area : float
-        area of the polygon in mm^2
+        area of the polygon in mm^2 (at the exported scale, see MM_PER_UNIT)
     '''
     pts = [G.nodes[nid]['pos'] for nid in nodes]
     n = len(pts)
@@ -30,7 +30,7 @@ def _shoelace(G: nx.Graph, nodes: List[int], scale: float) -> float:
         pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1]
         for i in range(n)
     )) / 2
-    return norm_area / (scale**2)
+    return norm_area * MM_PER_UNIT**2
 
 def _centroid(G: nx.Graph, nodes: List[int]) -> Tuple[float, float]:
     '''
@@ -52,16 +52,14 @@ def _centroid(G: nx.Graph, nodes: List[int]) -> Tuple[float, float]:
     c = Polygon(pts).centroid
     return c.x, c.y
 
-def extract_faces(G: nx.Graph, scale: float) -> Tuple[List[int], List[List[int]], List[float], List[Tuple[float, float]]]:
+def extract_faces(G: nx.Graph) -> Tuple[List[int], List[List[int]], List[float], List[Tuple[float, float]]]:
     '''
     Extract all faces of a planar graph.
 
     Parameters
     ----------
     G : nx.Graph
-        planar graph
-    scale : float
-        mm per unit
+        planar graph with normalized positions
 
     Returns
     -------
@@ -70,7 +68,7 @@ def extract_faces(G: nx.Graph, scale: float) -> Tuple[List[int], List[List[int]]
     bounded_faces : Tuple[List[List[int]]
         list of bounded faces
     areas : List[float]
-        area of each bounded face
+        area of each bounded face in mm^2
     centroids : List[Tuple[float, float]]
         centroid of each bounded face
 
@@ -84,28 +82,30 @@ def extract_faces(G: nx.Graph, scale: float) -> Tuple[List[int], List[List[int]]
     
     planar_nodes = list(G.nodes())
     points = np.array([G.nodes[nid]['pos'] for nid in planar_nodes])
-    x_range = np.ptp(points[:, 0])
 
-    if x_range == 0:
-        return np.argsort(points[:, 1]).tolist(), [], [], []
+    hull_poly = MultiPoint(points).convex_hull
+    if not isinstance(hull_poly, Polygon):
+        return [planar_nodes[i] for i in np.lexsort((points[:, 1], points[:, 0]))], [], [], []
 
-    seen  = set()
+    visited_half_edges = set()
     faces = []
-    for u, v in G.edges():
-        for a, b in [(u, v), (v, u)]:
-            face = embedding.traverse_face(a, b)
-            key  = frozenset(face)
-            if key not in seen:
-                seen.add(key)
-                faces.append(face)
+    for u, v in embedding.edges():
+        if (u, v) in visited_half_edges:
+            continue
+        faces.append(embedding.traverse_face(u, v, mark_half_edges=visited_half_edges))
     
-    hull_poly = alphashape.alphashape(points, 0.1)
+    try:
+        alpha_poly = alphashape.alphashape(points, 0.1)
+    except QhullError:
+        alpha_poly = None
+    if isinstance(alpha_poly, Polygon) and alpha_poly.is_valid and not alpha_poly.is_empty:
+        hull_poly = alpha_poly
     boundary_coords = np.array(hull_poly.exterior.coords)[:-1]
     tree = KDTree(points)
     _, indices = tree.query(boundary_coords)
     alpha_shape = [planar_nodes[i] for i in indices]
 
-    face_areas = [(f, _shoelace(G, f, scale)) for f in faces]
+    face_areas = [(f, _shoelace(G, f)) for f in faces]
     outer_face = max(face_areas, key=lambda x: x[1])[0]
     bounded = [(f, a) for f, a in face_areas if f is not outer_face]
     bounded_faces = [f for f, _ in bounded]

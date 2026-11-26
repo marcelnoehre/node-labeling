@@ -2,7 +2,8 @@ import copy
 import numpy as np
 import networkx as nx
 
-from shapely import box, unary_union
+from shapely import affinity, box, unary_union
+from shapely.strtree import STRtree
 from shapely.geometry import Point, Polygon
 from shapely.validation import make_valid
 from typing import Dict, List, Optional, Tuple
@@ -15,7 +16,11 @@ from node_labeling.topology.faces import *
 
 def _eroded_space(space: Polygon, w: float, h: float, below: float, above: float) -> Polygon:
     '''
-    Return the set of valid center positions for a label inside space.
+    Return the set of valid center positions for a w × h label inside space.
+
+    The space is stretched vertically by w / h, so the label becomes a square, eroded by half the
+    square's side with mitre joins and shrunk back. This is exact for axis-parallel edges and slightly
+    too permissive for slanted ones, which `_find_valid_position` catches with `space.contains`.
 
     Parameters
     ----------
@@ -35,12 +40,16 @@ def _eroded_space(space: Polygon, w: float, h: float, below: float, above: float
     eroded : Polygon
         eroded space
     '''
-    smaller, larger = min(w, h), max(w, h)
-    eroded = space.buffer(-smaller / 2, join_style=2)
+    if space.is_empty:
+        return space
+
+    ratio = w / h
+    stretched = affinity.scale(space, xfact=1.0, yfact=ratio, origin=(0, 0))
+    eroded = stretched.buffer(-w / 2, join_style=2)
     if eroded.is_empty:
         return eroded
-    
-    eroded = eroded.buffer(-(larger - smaller) / 2, join_style=2)
+
+    eroded = affinity.scale(eroded, xfact=1.0, yfact=1.0 / ratio, origin=(0, 0))
 
     # clip search space for fca version
     if (below is not None) or (above is not None):
@@ -91,6 +100,7 @@ def _fits(space: Polygon, w: float, h: float, type: LabelType, node_y: float) ->
     return not _eroded_space(space, w, h, below, above).is_empty
 
 def _fitting_faces(
+    G: nx.Graph,
     overflow_candidates: Dict[int, LabelCandidate],
     processed_faces: List[Tuple[int, Polygon]],
 ) -> Dict[int, List[int]]:
@@ -99,6 +109,8 @@ def _fitting_faces(
 
     Parameters
     ----------
+    G : nx.Graph
+        graph containing positions
     overflow_candidates : Dict[int, LabelCandidate]
         overflow candidates to be placed
     processed_faces : List[Tuple[int, Polygon]]
@@ -114,7 +126,7 @@ def _fitting_faces(
         ew, eh = label_wh(ol.exp_bbox_corners)
         fitting_faces[lid] = [
             fid for fid, space in processed_faces
-            if _fits(space, ew, eh, ol.label_type, ol.center[1])
+            if _fits(space, ew, eh, ol.label_type, G.nodes[ol.node_id]['pos'][1])
         ]
 
     return fitting_faces
@@ -145,6 +157,8 @@ def _adjust_anchors(
         [lid for lid, ol in overflow_candidates.items() if ol.anchor.anchor_type != AnchorType.O], 
         key=lambda lid: Point(overflow_candidates[lid].anchor.pos).distance(Point(G.nodes[overflow_candidates[lid].node_id]['pos']))
     )
+    edge_tree = STRtree([LineString([G.nodes[u]['pos'], G.nodes[v]['pos']]) for u, v in G.edges()])
+    node_points = [Point(data['pos']) for nid, data in G.nodes(data=True) if isinstance(nid, int)]
 
     for lid in bounded_overflow_labels:
         ol = overflow_candidates[lid]
@@ -189,12 +203,24 @@ def _adjust_anchors(
             if any(tmp_exp_poly.intersects(Polygon(l[0].pad_bbox_corners)) for l in label_candidates.values() if l):
                 continue # overlaps with existing label
     
-            if any(tmp_exp_poly.intersects(Polygon(oc.exp_bbox_corners)) for oc in overflow_candidates.values() if (oc.node_id != tmp_ol.node_id) and (oc.anchor.anchor_type != AnchorType.O)):
+            tmp_exp_interior = tmp_exp_poly.buffer(-1e-6)
+            if len(edge_tree.query(tmp_exp_interior, predicate='intersects')) > 0:
+                continue # crosses an edge of the graph
+
+            if any(tmp_exp_interior.contains(pt) for pt in node_points):
+                continue # covers a node
+
+            others = [
+                oc for o_lid, oc in overflow_candidates.items()
+                if o_lid != lid and oc.anchor.anchor_type != AnchorType.O
+            ]
+
+            if any(tmp_exp_poly.intersects(Polygon(oc.exp_bbox_corners)) for oc in others):
                 continue # overlaps another overflow label
  
             if any(
                 tmp_pad_poly.intersects(LineString([G.nodes[oc.node_id]['pos'], oc.anchor.pos])) 
-                for oc in overflow_candidates.values() if (oc.node_id != tmp_ol.node_id) and (oc.anchor.anchor_type != AnchorType.O)
+                for oc in others
             ):
                 continue # overlaps with a binder of another overflow label
 
@@ -251,9 +277,9 @@ def _find_valid_position(
     below = None
     above = None
     if ol.label_type == LabelType.EXTENT:
-        below = ol.center[1]
+        below = node_pos[1]
     if ol.label_type == LabelType.INTENT:
-        above = ol.center[1]
+        above = node_pos[1]
     eroded = _eroded_space(space, ew, eh, below, above)
     if eroded.is_empty:
         return None
@@ -412,7 +438,7 @@ def bounded_overflow_labels(
             poly = make_valid(poly)
         processed_faces.append((fd['fid'], poly.difference(placed_union)))
 
-    fitting_faces = _fitting_faces(overflow_candidates, processed_faces)
+    fitting_faces = _fitting_faces(G, overflow_candidates, processed_faces)
 
     space_map: Dict[int, Polygon] = dict(processed_faces)
     placed_overflow: List[int] = []
@@ -444,7 +470,7 @@ def bounded_overflow_labels(
                 and _fits(
                     space, *label_wh(overflow_candidates[lid].exp_bbox_corners), 
                     type=overflow_candidates[lid].label_type, 
-                    node_y=overflow_candidates[lid].center[1]
+                    node_y=G.nodes[overflow_candidates[lid].node_id]['pos'][1]
                 )
             ]
 
@@ -452,15 +478,15 @@ def bounded_overflow_labels(
                 continue
 
             # node closest to the center of remaining space in the face
-            incident_candidates = [lid for lid in candidates if lid in bounded_faces[fid]]
+            incident_candidates = [lid for lid in candidates if overflow_candidates[lid].node_id in bounded_faces[fid]]
             chosen_label = min(
                 incident_candidates,
                 key=lambda lid: np.linalg.norm(np.array(G.nodes[overflow_candidates[lid].node_id]['pos']) - face_centroid),
                 default=None
             )
 
-            if not chosen_label:
-                non_incident_candidates = [lid for lid in candidates if lid not in bounded_faces[fid]]
+            if chosen_label is None:
+                non_incident_candidates = [lid for lid in candidates if overflow_candidates[lid].node_id not in bounded_faces[fid]]
                 chosen_label = min(
                     non_incident_candidates,
                     key=lambda lid: np.linalg.norm(np.array(G.nodes[overflow_candidates[lid].node_id]['pos']) - face_centroid),
