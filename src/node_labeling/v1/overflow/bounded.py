@@ -9,9 +9,9 @@ from shapely.validation import make_valid
 from typing import Dict, List, Optional, Tuple
 
 from node_labeling.models.label_type import LabelType
-from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.v1.models.label_candidate import LabelCandidate
 from node_labeling.models.anchor import Anchor, AnchorType
-from node_labeling.utils.geometry import *
+from node_labeling.v1.utils.geometry import *
 from node_labeling.topology.faces import *
 
 def _eroded_space(space: Polygon, w: float, h: float, below: float, above: float) -> Polygon:

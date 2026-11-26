@@ -9,12 +9,12 @@ from shapely import unary_union
 from shapely.geometry import Polygon
 
 from node_labeling.utils.config import Config
-from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.v2.models.label_candidate import LabelCandidate
 from node_labeling.models.anchor import AnchorType
-from node_labeling.utils.geometry import *
-from node_labeling.overflow.grid import *
-from node_labeling.overflow.grid import _generate_candidates
-from node_labeling.overflow.hungarian import *
+from node_labeling.v2.utils.geometry import *
+from node_labeling.v2.overflow.grid import *
+from node_labeling.v2.overflow.grid import _generate_candidates
+from node_labeling.v2.overflow.hungarian import *
 
 def _adjust_anchors(
         G: nx.Graph, 

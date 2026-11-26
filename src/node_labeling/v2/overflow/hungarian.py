@@ -5,8 +5,8 @@ from typing import List, Dict, Tuple, Optional
 from scipy.optimize import linear_sum_assignment
 
 from node_labeling.utils.config import Config
-from node_labeling.utils.geometry import *
-from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.v2.utils.geometry import *
+from node_labeling.v2.models.label_candidate import LabelCandidate
 
 def _build_cost_matrix_with_penalties(
     label_ids: List[int],

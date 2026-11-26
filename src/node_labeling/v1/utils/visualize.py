@@ -10,7 +10,7 @@ from typing import Dict, List, Tuple
 from node_labeling.utils.constants import *
 from node_labeling.models.anchor import AnchorType
 from node_labeling.models.label_type import LabelType
-from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.v1.models.label_candidate import LabelCandidate
 
 def _ink_center(candidate: LabelCandidate) -> Tuple[float, float]:
     '''

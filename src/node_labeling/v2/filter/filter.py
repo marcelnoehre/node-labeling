@@ -8,9 +8,9 @@ from typing import Dict, List
 
 from node_labeling.utils.graph_lattice import GraphLattice
 from node_labeling.models.anchor import AnchorType
-from node_labeling.models.label_candidate import LabelCandidate
-from node_labeling.filter.rules import *
-from node_labeling.filter.matching import *
+from node_labeling.v2.models.label_candidate import LabelCandidate
+from node_labeling.v2.filter.rules import *
+from node_labeling.v2.filter.matching import *
 
 def restrict_outer_node_candidates(
     G: nx.Graph,

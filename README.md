@@ -39,6 +39,10 @@ The `--export` flag also works with the PyPI install:
 ```bash
 node-labeling --export
 ```
+Choose the algorithm version with `--version` (`2` by default, `1` for the original algorithm).
+```bash
+uv run node-labeling --version 1
+```
 
 ### Use as a library
 Node Labeling can also be called directly from Python via `node_labeling.label`.
@@ -51,7 +55,7 @@ labels = label('path/to/graph.graphml')
 ```
 
 By default `label` returns the final label placement for every node as a dict mapping label id to
-`LabelCandidate`. Pass `export=True` to instead write the final layout to a PDF in `figs/`.
+the label model of the chosen version (`LabelCandidate` in version 1). Pass `export=True` to instead write the final layout to a PDF in `figs/`.
 ```python
 label('path/to/graph.graphml', export=True)
 ```
@@ -67,6 +71,7 @@ labels = label('path/to/graph.graphml', cfg=Config(top_k=200))
 ## Configuration
 | Category | Parameter | Description |
 | :--- | :--- | :--- |
+| **Pipeline** | `version` | Algorithm version: `2` (default) or `1` (original) |
 | **Dev Mode** | `plot` | Whether to plot intermediate steps |
 | | `runtime` | Whether to display runtime information |
 | **Data** | `label_config` | Label configuration |

@@ -4,8 +4,8 @@ from typing import Dict, List
 
 from node_labeling.utils.constants import *
 from node_labeling.models.anchor import AnchorType, Anchor
-from node_labeling.models.label_candidate import LabelCandidate
-from node_labeling.utils.geometry import label_wh, label_rows, label_padding, overflow_boxes
+from node_labeling.v2.models.label_candidate import LabelCandidate
+from node_labeling.v2.utils.geometry import label_wh, label_rows, label_padding, overflow_boxes
 
 def _compute_overflow_candidate(G: nx.Graph, initial_candidate: LabelCandidate) -> LabelCandidate:
     '''

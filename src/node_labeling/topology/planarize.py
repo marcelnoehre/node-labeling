@@ -5,7 +5,7 @@ from typing import Dict, List, Tuple
 from shapely.strtree import STRtree
 from shapely.geometry import LineString, Point
 
-from node_labeling.utils.geometry import as_points
+from node_labeling.utils.shapely_utils import as_points
 
 def find_intersections(
         relations: List[Tuple[int, int]],

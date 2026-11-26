@@ -8,10 +8,10 @@ from shapely.geometry import Polygon
 from shapely.prepared import prep
 
 from node_labeling.utils.config import Config
-from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.v2.models.label_candidate import LabelCandidate
 from node_labeling.models.label_type import LabelType
 from node_labeling.models.anchor import AnchorType
-from node_labeling.utils.geometry import *
+from node_labeling.v2.utils.geometry import *
 from node_labeling.utils.constants import *
 
 def _generate_candidates(

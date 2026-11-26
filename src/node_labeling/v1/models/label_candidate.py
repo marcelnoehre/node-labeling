@@ -1,7 +1,7 @@
 from typing import Tuple
 from dataclasses import dataclass
 
-from node_labeling.utils.geometry import label_wh, label_rows, label_padding, overflow_boxes, binder_anchor
+from node_labeling.v1.utils.geometry import label_wh, label_rows, label_padding, overflow_boxes, binder_anchor
 from node_labeling.models.anchor import Anchor, AnchorType
 from node_labeling.models.label_type import LabelType
 

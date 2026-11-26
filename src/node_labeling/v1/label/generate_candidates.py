@@ -8,9 +8,9 @@ from node_labeling.utils.constants import *
 from node_labeling.utils.graph_lattice import GraphLattice
 from node_labeling.models.anchor import AnchorType, Anchor
 from node_labeling.models.label_type import LabelType
-from node_labeling.models.label_candidate import LabelCandidate
+from node_labeling.v1.models.label_candidate import LabelCandidate
 from node_labeling.label.formatter import *
-from node_labeling.utils.geometry import label_rows, label_padding
+from node_labeling.v1.utils.geometry import label_rows, label_padding
 
 def _compute_label_candidates(
         G: nx.Graph,

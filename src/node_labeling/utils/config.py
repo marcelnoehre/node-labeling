@@ -5,6 +5,8 @@ from node_labeling.models.label_type import LabelType
 
 @dataclass
 class Config:
+    # pipeline
+    version: int = 2
     # dev mode
     plot: bool = False
     runtime: bool = True

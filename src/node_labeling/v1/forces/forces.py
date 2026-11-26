@@ -9,8 +9,8 @@ from shapely.ops import nearest_points
 
 from node_labeling.models.anchor import Anchor, AnchorType
 from node_labeling.models.label_type import LabelType
-from node_labeling.models.label_candidate import LabelCandidate
-from node_labeling.utils.geometry import *
+from node_labeling.v1.models.label_candidate import LabelCandidate
+from node_labeling.v1.utils.geometry import *
 from node_labeling.utils.config import Config
 
 def cross2d(a: np.ndarray, b: np.ndarray) -> float:
