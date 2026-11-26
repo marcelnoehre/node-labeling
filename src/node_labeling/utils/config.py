@@ -48,4 +48,5 @@ class Config:
     # force refinement
     force_iterations: int = 10000
     force_step_size: float = 0.1
+    force_tolerance: float = 1e-4
     min_binder_length: float = 0.25

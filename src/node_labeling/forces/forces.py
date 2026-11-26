@@ -209,6 +209,9 @@ def optimize_overflow_labels(
             if force_mag > 1.0:
                 delta = (force_vector / force_mag) * step_size
 
+            if np.linalg.norm(delta) < cfg.force_tolerance:
+                continue
+
             proposed_center = current_center + delta
 
             # guards
