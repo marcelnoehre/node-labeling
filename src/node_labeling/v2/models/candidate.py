@@ -83,6 +83,16 @@ class Candidate:
         return affinity.translate(local, *self.position)
 
     @cached_property
+    def body(self) -> BaseGeometry:
+        '''
+        Returns
+        -------
+        body : BaseGeometry
+            solid label block at the position (see `LabelShape.body`)
+        '''
+        return affinity.translate(self.shape.body, *self.position)
+
+    @cached_property
     def pad_hull(self) -> Polygon:
         '''
         Returns

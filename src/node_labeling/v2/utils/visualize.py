@@ -2,48 +2,73 @@ import networkx as nx
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.cm as cm
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+from shapely.geometry.base import BaseGeometry
 from typing import Dict, List, Tuple
 
-from node_labeling.utils.constants import *
-from node_labeling.models.anchor import AnchorType
+from node_labeling.utils.constants import (
+    BINDER_DOT_SIZE, CMAP, COLORBAR_WIDTH_IN, DPI, FIGURE_PADDING_MM, LINE_WIDTH, MM_PER_UNIT, NODE_SIZE
+)
 from node_labeling.models.label_type import LabelType
-from node_labeling.v2.models.label_candidate import LabelCandidate
+from node_labeling.v2.label.sliding import SlidingLabel
+from node_labeling.v2.models.candidate import Candidate
 
-def _ink_center(candidate: LabelCandidate) -> Tuple[float, float]:
+TYPE_COLORS = {LabelType.GENERAL: 'tab:green', LabelType.EXTENT: 'tab:blue', LabelType.INTENT: 'tab:purple'}
+OVERFLOW_COLOR = 'tab:orange'
+UNPLACED_COLOR = 'tab:red'
+
+def _color(candidate: Candidate) -> str:
     '''
-    Drawing point of the text (the ink box center for box candidates).
+    Dev plot color: by label type, overflow labels orange, unplaced ones red.
 
     Parameters
     ----------
-    candidate : LabelCandidate
-        label candidate
+    candidate : Candidate
+        label
 
     Returns
     -------
-    center : Tuple[float, float]
-        center of the ink box
+    color : str
+        matplotlib color
     '''
-    return candidate.center
+    if candidate.overflow:
+        return OVERFLOW_COLOR if candidate.binder is not None else UNPLACED_COLOR
+    return TYPE_COLORS[candidate.label_type]
+
+def _rings(geom: BaseGeometry) -> List[np.ndarray]:
+    '''
+    Parameters
+    ----------
+    geom : BaseGeometry
+        Polygon or MultiPolygon
+
+    Returns
+    -------
+    rings : List[np.ndarray]
+        exterior coordinates of every polygon
+    '''
+    return [np.asarray(p.exterior.coords) for p in getattr(geom, 'geoms', [geom]) if not p.is_empty]
 
 def _content_bounds(
         G: nx.Graph,
-        candidates: List[LabelCandidate],
-        colored_label_candidates: bool
+        candidates: List[Candidate],
+        dev: bool
 ) -> Tuple[float, float, float, float]:
     '''
-    Bounds of everything that is drawn: nodes (with their marker) and label boxes.
+    Bounds of everything that is drawn: nodes (with their marker), letters (dev:
+    exp shapes) and binder attachments.
 
     Parameters
     ----------
     G : nx.Graph
         graph containing positions
-    candidates : List[LabelCandidate]
-        all drawn label, overflow and grid candidates
-    colored_label_candidates : bool
-        wether the pad and exp boxes are drawn as well
+    candidates : List[Candidate]
+        all drawn labels and grid positions
+    dev : bool
+        wether the pad and exp shapes are drawn as well
 
     Returns
     -------
@@ -58,129 +83,105 @@ def _content_bounds(
         ys += [y - marker_radius, y + marker_radius]
 
     for candidate in candidates:
-        boxes = [candidate.ink_bbox_corners]
-        if colored_label_candidates:
-            boxes += [candidate.pad_bbox_corners, candidate.exp_bbox_corners]
-        for corners in boxes:
-            xs += [corner[0] for corner in corners]
-            ys += [corner[1] for corner in corners]
-        xs.append(candidate.anchor.pos[0])
-        ys.append(candidate.anchor.pos[1])
+        x0, y0, x1, y1 = (candidate.exp if dev else candidate.ink).bounds
+        xs += [x0, x1]
+        ys += [y0, y1]
+        attach = candidate.binder.end if candidate.binder is not None else candidate.node_pos
+        xs.append(attach[0])
+        ys.append(attach[1])
 
     pad = FIGURE_PADDING_MM / MM_PER_UNIT
     return min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad
 
-def _draw_candidate(
-        ax: Axes,
-        candidate: LabelCandidate,
-        colored_label_candidates: bool = False
-):
+def _draw_shapes(ax: Axes, candidate: Candidate, color: str):
     '''
-    Place the label candidate and visualize its bounding boxes.
+    Dev view of a label: pad filled, letters outlined, exp dotted.
 
+    Parameters
+    ----------
     ax : Axes
         the axes of the figure
-    candidate : LabelCandidate
-        label candidate to be visualized
-    colored_label_candidates : bool
-        wether to draw the bounding boxes
+    candidate : Candidate
+        label
+    color : str
+        color
     '''
-    if colored_label_candidates:
-        color = candidate.anchor.anchor_type.color
-        ax.add_patch(mpatches.Polygon(
-            candidate.ink_bbox_corners, closed=True, facecolor='none', edgecolor=color,
-            alpha=0.9, linestyle='-', linewidth=0.8, zorder=4, clip_on=False
-        ))
-        ax.add_patch(mpatches.Polygon(
-            candidate.pad_bbox_corners, closed=True, facecolor=color, edgecolor=color,
-            alpha=0.30, linestyle='-', linewidth=1.6, zorder=3, clip_on=False
-        ))
-        ax.add_patch(mpatches.Polygon(
-            candidate.exp_bbox_corners, closed=True,
-            facecolor='none', edgecolor=color,
-            alpha=0.55, linestyle=':', linewidth=1.0,
-            zorder=3, clip_on=False
-        ))
+    for ring in _rings(candidate.pad):
+        ax.add_patch(mpatches.Polygon(ring, closed=True, facecolor=color, edgecolor=color, alpha=0.25,
+                                      linewidth=0.8, zorder=3, clip_on=False))
+    for ring in _rings(candidate.exp):
+        ax.add_patch(mpatches.Polygon(ring, closed=True, facecolor='none', edgecolor=color, alpha=0.55,
+                                      linestyle=':', linewidth=1.0, zorder=3, clip_on=False))
+    for ring in _rings(candidate.ink):
+        ax.add_patch(mpatches.Polygon(ring, closed=True, facecolor='none', edgecolor=color, alpha=0.9,
+                                      linewidth=0.4, zorder=4, clip_on=False))
 
-        anchor_pos = candidate.anchor.pos
-        ax.scatter(*anchor_pos, color=color, s=30, zorder=10, alpha=0.9, clip_on=False)
-
-    text_color = color if colored_label_candidates else 'black'
-    cx, cy = _ink_center(candidate)
-
-    ax.text(
-        cx, cy, candidate.text,
-        ha='center', va='center',
-        color=text_color,
-        clip_on=False,
-        alpha=1.0,
-        zorder=7,
-    )
-
-def _draw_overflow_candidate(
-        G: nx.Graph,
-        ax: Axes,
-        candidate: LabelCandidate,
-        colored_label_candidates: bool = False
-):
+def _draw_label(G: nx.Graph, ax: Axes, candidate: Candidate, dev: bool = False):
     '''
-    Place the overflow candidate and visualize its bounding boxes.
+    Draw a label: its text at the drawing point and, for overflow labels, the
+    binder with its dot. Dev mode adds the shapes.
 
+    Parameters
+    ----------
     G : nx.Graph
         graph containing positions
     ax : Axes
         the axes of the figure
-    candidate : LabelCandidate
-        overflow candidate to be visualized
-    colored_label_candidates : bool
-        wether to draw the bounding boxes
+    candidate : Candidate
+        label
+    dev : bool
+        wether to draw the shapes
     '''
-    if colored_label_candidates:
-        color = candidate.anchor.anchor_type.color
-        ax.add_patch(mpatches.Polygon(
-            candidate.ink_bbox_corners, closed=True,
-            facecolor='none', edgecolor=color,
-            alpha=0.9, linestyle='-', linewidth=0.8,
-            zorder=4, clip_on=False
-        ))
-        ax.add_patch(mpatches.Polygon(
-            candidate.pad_bbox_corners, closed=True,
-            facecolor=color, edgecolor=color,
-            alpha=0.30, linestyle='-', linewidth=1.6,
-            zorder=3, clip_on=False
-        ))
+    color = _color(candidate)
+    if dev:
+        _draw_shapes(ax, candidate, color)
 
-        ax.scatter(*candidate.anchor.pos, color=color, s=30, zorder=6, alpha=0.9, clip_on=False)
-
-        ax.add_patch(mpatches.Polygon(
-            candidate.exp_bbox_corners, closed=True,
-            facecolor='none', edgecolor=color,
-            alpha=0.55, linestyle=':', linewidth=1.0,
-            zorder=3, clip_on=False
-        ))
-
-    if candidate.anchor.anchor_type != AnchorType.O:
-        ax.scatter(*candidate.anchor.pos, color='grey', s=BINDER_DOT_SIZE, linewidths=0, zorder=6, alpha=0.8, clip_on=False)
-        nx_, ny = G.nodes[candidate.node_id]['pos']
-        ax.plot(
-            [candidate.anchor.pos[0], nx_], 
-            [candidate.anchor.pos[1], ny], 
-            color='grey', linestyle='--', 
-            linewidth=0.5, alpha=0.4, 
-            zorder=4, clip_on=False
-        )
-
-    text_color = color if colored_label_candidates else 'black'
-    cx, cy = _ink_center(candidate)
+    binder = candidate.binder
+    if binder is not None:
+        ax.scatter(*binder.end, color='grey', s=BINDER_DOT_SIZE, linewidths=0, zorder=6, alpha=0.8, clip_on=False)
+        style = dict(color='grey', linestyle='--', linewidth=0.5, alpha=0.4, zorder=4)
+        if dev and not binder.straight:
+            style.update(color='tab:red', alpha=0.9)
+        if binder.straight:
+            nx_, ny = G.nodes[candidate.node_id]['pos']
+            ax.plot([binder.end[0], nx_], [binder.end[1], ny], clip_on=False, **style)
+        else:
+            ax.add_patch(mpatches.PathPatch(binder.path(), facecolor='none', edgecolor=style['color'],
+                                            linestyle='--', linewidth=0.5, alpha=0.4, zorder=4, clip_on=False))
 
     ax.text(
-        cx, cy, candidate.text,
+        *candidate.position, candidate.text,
         ha='center', va='center',
-        color=text_color,
+        color=color if dev else 'black',
         clip_on=False,
         alpha=1.0,
         zorder=7,
     )
+
+def _draw_slider(ax: Axes, label: SlidingLabel):
+    '''
+    Dev view of a slider: the path of the label's center line point (dashed),
+    feasible positions (light, thick) and preferred ones (dark).
+
+    Parameters
+    ----------
+    ax : Axes
+        the axes of the figure
+    label : SlidingLabel
+        label with slider and feasible set
+    '''
+    color = TYPE_COLORS[label.label_type] if not label.feasible.intervals.is_empty else '0.6'
+
+    def arc(a: float, b: float, **kw):
+        t = np.linspace(a, b, max(2, int((b - a) / 0.005)))
+        P = label.slider.positions(t) + [0.0, label.slider.center_y]
+        ax.plot(*P.T, solid_capstyle='butt', clip_on=False, **kw)
+
+    arc(0.0, label.slider.length, color=color, linewidth=0.5, linestyle='--', zorder=3)
+    for a, b in label.feasible.intervals:
+        arc(a, b, color=color, linewidth=3.0, alpha=0.3, zorder=3)
+    for a, b in label.feasible.preferred:
+        arc(a, b, color=color, linewidth=1.4, zorder=3)
 
 def plot_graph(
         G: nx.Graph,
@@ -200,20 +201,22 @@ def plot_graph(
         centroids: List[Tuple[float, float]] = [],
         show_face_areas: bool = False,
         show_face_sizes: bool = False,
-        # label candidates
-        label_candidates: Dict[int, List[LabelCandidate]] = {},
+        # labels
+        label_candidates: Dict[int, Candidate] = {},
         colored_label_candidates: bool = False,
         show_legend: bool = False,
-        # overflow candidates
-        overflow_candidates: Dict[int, LabelCandidate] = {},
-        # grid candidates
-        grid_candidates: Dict[int, List[Tuple[LabelCandidate, float]]] = {}
+        # overflow labels
+        overflow_candidates: Dict[int, Candidate] = {},
+        # grid positions of the exterior labels
+        grid_candidates: Dict[int, List[Tuple[Candidate, float]]] = {},
+        # sliders
+        sliders: List[SlidingLabel] = []
 ) -> None:
     '''
     Draw the graph and save to a PDF.
 
     The figure is sized so that one normalized unit is exactly MM_PER_UNIT mm, which is the scale
-    the label boxes were measured for (text is rendered at a fixed point size).
+    the label shapes were measured for (text is rendered at a fixed point size).
 
     Parameters
     ----------
@@ -234,18 +237,26 @@ def plot_graph(
     bounded_faces, areas, centroids, show_face_areas, show_face_sizes
         bounded faces with their area (mm^2) and centroid, wether to draw them and their size
     label_candidates, colored_label_candidates, show_legend
-        label candidates, wether to draw their boxes and anchors, wether to draw the anchor legend
-    overflow_candidates : Dict[int, LabelCandidate]
+        labels placed at their nodes, wether to draw their shapes (dev mode, colored by label
+        type), wether to draw the color legend
+    overflow_candidates : Dict[int, Candidate]
         overflow labels
-    grid_candidates : Dict[int, List[Tuple[LabelCandidate, float]]]
-        grid candidates of the exterior labels
+    grid_candidates : Dict[int, List[Tuple[Candidate, float]]]
+        grid positions of the exterior labels (drawn as points)
+    sliders : List[SlidingLabel]
+        sliders with feasible sets to draw
     '''
-    drawn = (
-        [candidate for candidates in label_candidates.values() for candidate in candidates]
-        + list(overflow_candidates.values())
-        + [candidate for candidates in grid_candidates.values() for candidate, _ in candidates]
-    )
-    min_x, min_y, max_x, max_y = _content_bounds(G, drawn, colored_label_candidates)
+    dev = colored_label_candidates
+    drawn = list(label_candidates.values()) + list(overflow_candidates.values())
+    min_x, min_y, max_x, max_y = _content_bounds(G, drawn, dev)
+    grid_pts = np.array([c.position for cands in grid_candidates.values() for c, _ in cands]).reshape(-1, 2)
+    slider_pts = np.vstack([L.slider.positions(np.linspace(0, L.slider.length, 50)) + [0, L.slider.center_y]
+                            for L in sliders]) if sliders else np.empty((0, 2))
+    extra = np.vstack([grid_pts, slider_pts])
+    if len(extra):
+        pad = FIGURE_PADDING_MM / MM_PER_UNIT
+        min_x, min_y = min(min_x, extra[:, 0].min() - pad), min(min_y, extra[:, 1].min() - pad)
+        max_x, max_y = max(max_x, extra[:, 0].max() + pad), max(max_y, extra[:, 1].max() + pad)
     width_in = (max_x - min_x) * MM_PER_UNIT / 25.4
     height_in = (max_y - min_y) * MM_PER_UNIT / 25.4
     show_colorbar = bool(show_face_areas and bounded_faces and areas)
@@ -271,11 +282,11 @@ def plot_graph(
     if show_intersections:
         for pt in intersections:
             ax.scatter(
-                pt[0], pt[1], 
-                facecolor='white', 
-                edgecolor='tab:red', 
-                linewidth=LINE_WIDTH, 
-                s=NODE_SIZE, 
+                pt[0], pt[1],
+                facecolor='white',
+                edgecolor='tab:red',
+                linewidth=LINE_WIDTH,
+                s=NODE_SIZE,
                 zorder=10
             )
 
@@ -314,28 +325,27 @@ def plot_graph(
         cb.set_label(r'Face area ($\mathrm{mm}^2$)', fontsize=16)
         cb.ax.tick_params(labelsize=14)
 
-    ##### label candidates #####
-    if label_candidates:
-        for candidates in label_candidates.values():
-            for candidate in candidates:
-                _draw_candidate(ax, candidate, colored_label_candidates)
+    ##### sliders #####
+    for label in sliders:
+        _draw_slider(ax, label)
 
-        if colored_label_candidates:
-            legend_handles = [
-                mpatches.Patch(facecolor=at.color, edgecolor=at.color, alpha=0.6, label=at.plain)
-                for at in AnchorType if at != AnchorType.O
-            ]
-            if show_legend:
-                ax.legend(handles=legend_handles, loc='upper left', fontsize=8, title='Label anchor', framealpha=0.8)
-    
-    if overflow_candidates:
-        for overflow_candidate in overflow_candidates.values():
-            _draw_overflow_candidate(G, ax, overflow_candidate, colored_label_candidates)
+    ##### labels #####
+    for candidate in label_candidates.values():
+        _draw_label(G, ax, candidate, dev)
+    for candidate in overflow_candidates.values():
+        _draw_label(G, ax, candidate, dev)
 
-    if grid_candidates:
-        for candidates in grid_candidates.values():
-            for grid_candidate, _ in candidates:
-                _draw_overflow_candidate(G, ax, grid_candidate, colored_label_candidates)
+    ##### grid positions #####
+    for lid, cands in grid_candidates.items():
+        if cands:
+            P = np.array([c.position for c, _ in cands])
+            ax.scatter(*P.T, s=4, color=OVERFLOW_COLOR, alpha=0.5, linewidths=0, zorder=5, clip_on=False)
+
+    if dev and show_legend:
+        handles = [mpatches.Patch(facecolor=c, edgecolor=c, alpha=0.6, label=t.name.lower()) for t, c in TYPE_COLORS.items()]
+        handles += [mpatches.Patch(facecolor=OVERFLOW_COLOR, alpha=0.6, label='overflow'),
+                    mpatches.Patch(facecolor=UNPLACED_COLOR, alpha=0.6, label='not placed')]
+        ax.legend(handles=handles, loc='best', fontsize=8, title='Label', framealpha=0.8)
 
     ax.set_xlim(min_x, max_x)
     ax.set_ylim(min_y, max_y)

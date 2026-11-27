@@ -122,7 +122,7 @@ class LabelRules:
         self.shape = shape
         self.label_type = label_type
         self.slider = slider
-        self.ink_clear = _clearance_shape(shape, edge_clearance)
+        self.ink_clear = clearance_shape(shape, edge_clearance)
         hull = obstacles.hull
         self.outer = hull is not None and Point(slider.node).distance(hull.boundary) <= OUTER_NODE_DIST
         others = np.array([n != node_id for n in obstacles.node_ids], dtype=bool)
@@ -246,7 +246,7 @@ class LabelRules:
         return hits
 
 @lru_cache(maxsize=None)
-def _clearance_shape(shape: LabelShape, clearance: float) -> BaseGeometry:
+def clearance_shape(shape: LabelShape, clearance: float) -> BaseGeometry:
     '''
     Ink grown by the edge clearance (cached per shape).
 

@@ -14,7 +14,7 @@ from node_labeling.utils.config import Config
 from node_labeling.utils.graph_lattice import GraphLattice
 from node_labeling.utils.constants import (
     EDGE_CLEARANCE_MM, LINE_WIDTH, MM_PER_UNIT, NODE_GAP_MM, NODE_SIZE, PADDING_MM, PLACEMENT_STEP_MM,
-    SLIDER_STEP_MM, SLIDER_TOL_MM
+    SLIDER_STEP_MM, SLIDER_TOL_MM, V2_ROW_BREAK
 )
 from node_labeling.v2.filter.shape_rules import LabelRules, Obstacles
 from node_labeling.v2.label.feasible import Feasible, feasible_set
@@ -62,7 +62,8 @@ class SlidingLabel:
 def collect_labels(lattice: GraphLattice, cfg: Config) -> List[Tuple[int, Hashable, LabelType, str]]:
     '''
     All labels to place, numbered in the order general, extent, intent (per
-    type in node order), as v1 numbers them.
+    type in node order), as v1 numbers them. Rows are set `V2_ROW_SKIP_PT`
+    closer than TeX's normal row distance (v1: `ROW_SKIP_PT`).
 
     Parameters
     ----------
@@ -86,7 +87,7 @@ def collect_labels(lattice: GraphLattice, cfg: Config) -> List[Tuple[int, Hashab
         if not cfg.label_config[label_type]:
             continue
         for nid in lattice.nodes:
-            text = format_label_text(cfg, texts[label_type](nid), label_type)
+            text = format_label_text(cfg, texts[label_type](nid), label_type, V2_ROW_BREAK)
             if text:
                 labels.append((len(labels), nid, label_type, text))
     return labels
@@ -146,6 +147,13 @@ def place_labels(labels: List[SlidingLabel], obstacles: Obstacles) -> Dict[int, 
        middle). So the neighbor rule never costs a label its place.
     3. positions of other labels whose spacer meets the placed spacer are removed;
        labels without positions become overflow labels
+    4. overflow retry (T6.5): a label without position is placed after all if
+       every placed label in its way can slide to a free position of its own
+       (each blocker moves once): fewest moves, then preferred, then the least
+       sliding. Repeated until nothing changes.
+    5. refinement (T6.5): every placed label slides within its free positions to
+       the best one by the tie order of step 1 (preferred, clearance, middle),
+       a few rounds.
 
     The feasible sets are sampled every `PLACEMENT_STEP_MM` (interval ends
     included); spacer overlaps are tested exactly between these samples.
@@ -219,11 +227,30 @@ def place_labels(labels: List[SlidingLabel], obstacles: Obstacles) -> Dict[int, 
         for j in [j for j in unplaced if alive_cnt[j] == 0]:
             unplaced.discard(j)
 
+    def clearance(k: int, gs: np.ndarray) -> np.ndarray:
+        others = [(labels[j], pos[j][chosen[j] - start[j]]) for j in chosen if j != k]
+        return _clearance(labels[k], pos[k][gs - start[k]], obstacles, others)
+
+    def keys(k: int, gs: np.ndarray) -> np.ndarray:
+        return np.column_stack([preferred[gs], clearance(k, gs), _middle(ts[k], run_id[k], gs - start[k])])
+
     def best(k: int, gs: np.ndarray) -> int:
-        others = [(labels[j], pos[j][chosen[j] - start[j]]) for j in chosen]
-        clear = _clearance(labels[k], pos[k][gs - start[k]], obstacles, others)
-        middle = _middle(ts[k], run_id[k], gs - start[k])
-        return int(gs[np.lexsort((-middle, -clear, ~preferred[gs]))[0]])
+        key = keys(k, gs)
+        return int(gs[np.lexsort((-key[:, 2], -key[:, 1], -key[:, 0]))[0]])
+
+    def local_min(k: int) -> float:
+        reach = 2 * CLEARANCE_CAP * labels[k].shape.padding
+        x0, y0, x1, y1 = labels[k].shape.ink.bounds
+        px, py = pos[k][chosen[k] - start[k]]
+        near = [k]
+        for j in chosen:
+            if j == k:
+                continue
+            a0, b0, a1, b1 = labels[j].shape.ink.bounds
+            qx, qy = pos[j][chosen[j] - start[j]]
+            if qx + a0 <= px + x1 + reach and qx + a1 >= px + x0 - reach and qy + b0 <= py + y1 + reach and qy + b1 >= py + y0 - reach:
+                near.append(j)
+        return min(float(clearance(j, np.array([chosen[j]]))[0]) for j in near)
 
     while unplaced:
         progress = True
@@ -258,6 +285,13 @@ def place_labels(labels: List[SlidingLabel], obstacles: Obstacles) -> Dict[int, 
             top &= loss[:, col] == loss[top, col].min()
         place(k, best(k, cand[top]))
 
+    occupancy = _Occupancy(indptr, b, N)
+    for g in chosen.values():
+        occupancy.add(g)
+    samples_of = lambda k: np.arange(start[k], start[k + 1])
+    _retry_overflow(chosen, occupancy, samples_of, owner, ts, start, preferred, counts)
+    _refine(chosen, occupancy, samples_of, keys, local_min)
+
     placed: Dict[int, Optional[Candidate]] = {}
     for k, L in enumerate(labels):
         if k not in chosen:
@@ -269,6 +303,158 @@ def place_labels(labels: List[SlidingLabel], obstacles: Obstacles) -> Dict[int, 
             text=L.text, shape=L.shape, position=(float(x), float(y))
         )
     return placed
+
+class _Occupancy:
+    '''
+    Occupied samples (the chosen position of every placed label) and, per
+    sample, the number of occupied samples it conflicts with.
+    '''
+    def __init__(self, indptr: np.ndarray, nb: np.ndarray, n: int):
+        self.indptr, self.nb = indptr, nb
+        self.conf = np.zeros(n, dtype=int)
+
+    def nbrs(self, g: int) -> np.ndarray:
+        return self.nb[self.indptr[g]:self.indptr[g + 1]]
+
+    def add(self, g: int):
+        self.conf[self.nbrs(g)] += 1
+
+    def remove(self, g: int):
+        self.conf[self.nbrs(g)] -= 1
+
+    def free(self, gs: np.ndarray) -> np.ndarray:
+        return gs[self.conf[gs] == 0]
+
+def _retry_overflow(
+        chosen: Dict[int, int],
+        occupancy: _Occupancy,
+        samples_of,
+        owner: np.ndarray,
+        ts: List[np.ndarray],
+        start: np.ndarray,
+        preferred: np.ndarray,
+        counts: np.ndarray
+):
+    '''
+    Place labels without position after all, if every placed label in the way can
+    slide to a free position of its own (one move per blocker). Among the
+    possible positions: fewest moves, then fewest positions that miss the
+    neighbor rule, then the least sliding (sum of |Δt|). Updates `chosen` and
+    `occupancy` in place.
+
+    Parameters
+    ----------
+    chosen : Dict[int, int]
+        chosen sample per placed label
+    occupancy : _Occupancy
+        occupied samples
+    samples_of : Callable[[int], np.ndarray]
+        sample indices of a label
+    owner : np.ndarray
+        label of every sample
+    ts : List[np.ndarray]
+        slider arc length of every sample, per label
+    start : np.ndarray
+        index of the first sample of every label
+    preferred : np.ndarray
+        whether every sample passes the neighbor rule
+    counts : np.ndarray
+        number of samples per label
+    '''
+    t_of = lambda g: ts[owner[g]][g - start[owner[g]]]
+    occupied = set(chosen.values())
+    changed = True
+    while changed:
+        changed = False
+        waiting = sorted((k for k in range(len(counts)) if k not in chosen and counts[k] > 0), key=lambda k: counts[k])
+        for k in waiting:
+            best_option = None
+            for g in samples_of(k):
+                blockers = [h for h in occupancy.nbrs(g) if h in occupied]
+                for h in blockers:
+                    occupancy.remove(h)
+                occupancy.add(g)
+                moves, ok = [], True
+                for h in blockers:
+                    alts = occupancy.free(samples_of(owner[h]))
+                    if not len(alts):
+                        ok = False
+                        break
+                    if preferred[alts].any():
+                        alts = alts[preferred[alts]]
+                    g2 = int(alts[np.argmin(np.abs(ts[owner[h]][alts - start[owner[h]]] - t_of(h)))])
+                    occupancy.add(g2)
+                    moves.append((h, g2))
+                for _, g2 in moves:
+                    occupancy.remove(g2)
+                occupancy.remove(g)
+                for h in blockers:
+                    occupancy.add(h)
+                if not ok:
+                    continue
+                key = (len(moves), int(not preferred[g]) + sum(int(not preferred[g2]) for _, g2 in moves),
+                       sum(abs(t_of(g2) - t_of(h)) for h, g2 in moves))
+                if best_option is None or key < best_option[0]:
+                    best_option = (key, g, moves)
+            if best_option is None:
+                continue
+            _, g, moves = best_option
+            for h, g2 in moves:
+                occupancy.remove(h)
+                occupied.discard(h)
+                occupancy.add(g2)
+                occupied.add(g2)
+                chosen[int(owner[h])] = g2
+            occupancy.add(g)
+            occupied.add(g)
+            chosen[k] = int(g)
+            changed = True
+
+def _refine(chosen: Dict[int, int], occupancy: _Occupancy, samples_of, keys, local_min, rounds: int = 3):
+    '''
+    Let every placed label slide to its best free position (tie order of the
+    placement: preferred, clearance, middle of the free stretch), a few rounds
+    or until nothing moves. A move is kept only if it is a strict improvement for
+    the label and the smallest clearance among the label and its neighbors does
+    not drop (moving away from an edge must not crowd a neighbor). Updates
+    `chosen` and `occupancy` in place.
+
+    Parameters
+    ----------
+    chosen : Dict[int, int]
+        chosen sample per placed label
+    occupancy : _Occupancy
+        occupied samples
+    samples_of : Callable[[int], np.ndarray]
+        sample indices of a label
+    keys : Callable[[int, np.ndarray], np.ndarray]
+        (preferred, clearance, middle) per given sample of a label
+    local_min : Callable[[int], float]
+        smallest clearance among a label and its neighbors at the current positions
+    rounds : int
+        maximal number of rounds
+    '''
+    for _ in range(rounds):
+        moved = False
+        for k in sorted(chosen):
+            g0 = chosen[k]
+            occupancy.remove(g0)
+            free = occupancy.free(samples_of(k))
+            key = keys(k, free)
+            i = int(np.lexsort((-key[:, 2], -key[:, 1], -key[:, 0]))[0])
+            i0 = int(np.flatnonzero(free == g0)[0])
+            g = int(free[i])
+            if g != g0 and tuple(key[i]) > tuple(key[i0]):
+                before = local_min(k)
+                chosen[k] = g
+                if local_min(k) < before - 1e-12:
+                    chosen[k] = g = g0
+            else:
+                g = g0
+            occupancy.add(g)
+            moved |= g != g0
+        if not moved:
+            break
 
 def _sample(feasible: Feasible, step: float) -> Tuple[np.ndarray, np.ndarray]:
     '''

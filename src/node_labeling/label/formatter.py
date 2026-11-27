@@ -44,7 +44,7 @@ def measure_ink_mm(text: str) -> Tuple[float, float]:
 
     return w_mm, h_mm
 
-def format_label_text(cfg: Config, plain_text: str, label_type: LabelType) -> str:
+def format_label_text(cfg: Config, plain_text: str, label_type: LabelType, row_break: str = ROW_BREAK) -> str:
     '''
     Format plain_text into at most k_rows rows and return a LaTeX string.
  
@@ -56,6 +56,8 @@ def format_label_text(cfg: Config, plain_text: str, label_type: LabelType) -> st
         raw label text
     label_type : LabelType
         general, extent, or intent
+    row_break : str
+        LaTeX row break between rows (with its vertical skip)
 
     Returns
     -------
@@ -81,7 +83,7 @@ def format_label_text(cfg: Config, plain_text: str, label_type: LabelType) -> st
     rows.append(str(' '.join(words[prev:])))
  
     formatted = [_format_row(cfg, r, label_type) for r in rows]
-    joined    = f' {ROW_BREAK} '.join(formatted)
+    joined    = f' {row_break} '.join(formatted)
     return rf'\begin{{tabular}}{{@{{}}c@{{}}}}{joined}\end{{tabular}}'
 
 def _format_row(cfg: Config, row: str, label_type: LabelType) -> str:

@@ -53,3 +53,12 @@ class Config:
     force_step_size: float = 0.1
     force_tolerance: float = 1e-4
     min_binder_length: float = 0.25
+    # curved binders (version 2)
+    curved_binders: bool = True
+    max_binder_bend: float = 45.0       # largest angle between binder chord and end tangents (degrees)
+    w_binder_bend: float = 3.0          # bend of a curved binder (per radian)
+    w_binder_s: float = 2.0             # extra for S-shaped binders
+    # overflow labels in free space (version 2)
+    overflow_radius_mm: float = 40.0    # search radius around the node
+    w_overflow_balance: float = 2.0     # weight of crowding (less than 5 mm free space on a side)
+    overflow_inside_mm: float = 2.0     # cost of a position inside the diagram (mm)

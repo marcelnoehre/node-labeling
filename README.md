@@ -55,7 +55,8 @@ labels = label('path/to/graph.graphml')
 ```
 
 By default `label` returns the final label placement for every node as a dict mapping label id to
-the label model of the chosen version (`LabelCandidate` in version 1). Pass `export=True` to instead write the final layout to a PDF in `figs/`.
+the label model of the chosen version: `LabelCandidate` in version 1, `Candidate` in version 2 (`position` = drawing point of
+the text, `ink`/`pad` shapes, `overflow`, and the `binder` of an overflow label: `binder.end` is the dot, `None` if it could not be placed). Pass `export=True` to instead write the final layout to a PDF in `figs/`.
 ```python
 label('path/to/graph.graphml', export=True)
 ```
@@ -105,6 +106,13 @@ labels = label('path/to/graph.graphml', cfg=Config(top_k=200))
 | | `force_iterations` | Number of iterations for force refinement |
 | | `force_step_size` | Step size for force refinement |
 | | `min_binder_length` | Minimum length for binding lines |
+| **Curved binders** | `curved_binders` | Allow Bézier binders where the straight one has a conflict (version 2) |
+| | `max_binder_bend` | Largest angle between binder chord and end tangents in degrees (version 2) |
+| | `w_binder_bend` | Cost of the bend of a curved binder, per radian (version 2) |
+| | `w_binder_s` | Extra cost of an S-shaped binder (version 2) |
+| **Overflow labels** | `overflow_radius_mm` | Search radius around the node for labels that do not fit at their node (version 2) |
+| | `w_overflow_balance` | Weight of crowding around an overflow label (less than 5 mm free space on a side, squared), so it keeps room to its neighbours and sits in the middle of tight gaps (version 2) |
+| | `overflow_inside_mm` | Cost of an overflow label position inside the diagram, in mm (version 2) |
 
 ## License
 Shield: [![CC BY 4.0][cc-by-shield]][cc-by]

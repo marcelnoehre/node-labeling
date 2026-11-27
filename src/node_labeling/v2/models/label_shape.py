@@ -12,7 +12,7 @@ from shapely.ops import nearest_points
 
 from node_labeling.utils.config import Config
 from node_labeling.utils.constants import (
-    BINDER_DOT_SIZE, DOT_GAP_MM, LABEL_DISTANCE, MM_PER_UNIT, PADDING_FONT_PT, PADDING_MM, SHAPE_TOLERANCE_MM
+    BINDER_DOT_SIZE, DOT_GAP_MM, EDGE_CLEARANCE_MM, LABEL_DISTANCE, MM_PER_UNIT, PADDING_FONT_PT, PADDING_MM, SHAPE_TOLERANCE_MM
 )
 from node_labeling.v2.label.shape import measure_label_shape, font_size_pt
 
@@ -113,10 +113,9 @@ class LabelShape:
         '''
         Ink grown by half the minimal distance between two labels
         (`LABEL_DISTANCE` paddings): two labels keep that distance iff their
-        spacers do not overlap. √2 paddings is the closest v1 lets two labels
-        come (pad boxes meeting at corner anchors, where the padding on the node
-        sides is p/√2). Pads would demand 2 paddings everywhere, which round pads
-        cannot meet at a shared node.
+        spacers do not overlap. Clearly more than the distance between the rows
+        of one label, so two stacked labels do not read as one; less than 2
+        paddings, which round pads could not meet at a shared node.
 
         Returns
         -------
@@ -139,6 +138,23 @@ class LabelShape:
         '''
         dot_mm = math.sqrt(BINDER_DOT_SIZE) / 2.0 * 25.4 / 72.0
         return _grow(self.ink, min((dot_mm + DOT_GAP_MM) / MM_PER_UNIT, self.padding))
+
+    @cached_property
+    def body(self) -> BaseGeometry:
+        '''
+        The label as a solid block for lines passing by (binders): the letters with
+        the gaps between letters, words and rows closed, grown by the edge
+        clearance (`EDGE_CLEARANCE_MM`, scaled like the padding). Made by shrinking
+        the pad (whose gaps are closed) back by padding − clearance.
+
+        Returns
+        -------
+        body : BaseGeometry
+            solid label block, relative to the drawing point
+        '''
+        clearance = self.padding * EDGE_CLEARANCE_MM / PADDING_MM
+        body = self.pad.buffer(-(self.padding - clearance))
+        return body if not body.is_empty else self.ink.buffer(clearance)
 
     @cached_property
     def pad_hull(self) -> Polygon:
