@@ -7,6 +7,7 @@ from shapely.geometry import Polygon
 from shapely.geometry.base import BaseGeometry
 
 from node_labeling.models.label_type import LabelType
+from node_labeling.v2.models.binder import Binder
 from node_labeling.v2.models.label_shape import LabelShape
 
 @dataclass(frozen=True, eq=False)
@@ -33,8 +34,8 @@ class Candidate:
         drawing point of the text (`ha='center', va='center'`)
     overflow : bool
         whether the label is attached by a binder instead of touching its node
-    attachment : Optional[Tuple[float, float]]
-        binder attachment point on the outline (overflow labels only)
+    binder : Optional[Binder]
+        binder from the node to the attachment point (placed overflow labels only)
     '''
     label_id: int
     node_id: Hashable
@@ -44,7 +45,7 @@ class Candidate:
     shape: LabelShape
     position: Tuple[float, float]
     overflow: bool = False
-    attachment: Optional[Tuple[float, float]] = None
+    binder: Optional[Binder] = None
 
     @cached_property
     def ink(self) -> BaseGeometry:
@@ -81,18 +82,38 @@ class Candidate:
             local = self.shape.exp((self.node_pos[0] - self.position[0], self.node_pos[1] - self.position[1]))
         return affinity.translate(local, *self.position)
 
-    def moved(self, position: Tuple[float, float], attachment: Optional[Tuple[float, float]] = None) -> 'Candidate':
+    @cached_property
+    def pad_hull(self) -> Polygon:
+        '''
+        Returns
+        -------
+        hull : Polygon
+            convex hull of the pad at the position
+        '''
+        return affinity.translate(self.shape.pad_hull, *self.position)
+
+    @cached_property
+    def dot_ring(self) -> Polygon:
+        '''
+        Returns
+        -------
+        ring : Polygon
+            outline for the binder dot at the position (see `LabelShape.dot_ring`)
+        '''
+        return affinity.translate(self.shape.dot_ring, *self.position)
+
+    def moved(self, position: Tuple[float, float], binder: Optional[Binder] = None) -> 'Candidate':
         '''
         Parameters
         ----------
         position : Tuple[float, float]
             new drawing point
-        attachment : Optional[Tuple[float, float]]
-            new binder attachment point (overflow labels)
+        binder : Optional[Binder]
+            new binder (overflow labels)
 
         Returns
         -------
         candidate : Candidate
             the same label at the new position
         '''
-        return replace(self, position=position, attachment=attachment)
+        return replace(self, position=(float(position[0]), float(position[1])), binder=binder)

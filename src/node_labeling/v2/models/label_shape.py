@@ -11,7 +11,9 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import nearest_points
 
 from node_labeling.utils.config import Config
-from node_labeling.utils.constants import MM_PER_UNIT, PADDING_MM, PADDING_FONT_PT, SHAPE_TOLERANCE_MM, LABEL_DISTANCE
+from node_labeling.utils.constants import (
+    BINDER_DOT_SIZE, DOT_GAP_MM, LABEL_DISTANCE, MM_PER_UNIT, PADDING_FONT_PT, PADDING_MM, SHAPE_TOLERANCE_MM
+)
 from node_labeling.v2.label.shape import measure_label_shape, font_size_pt
 
 @dataclass(frozen=True, eq=False)
@@ -123,7 +125,32 @@ class LabelShape:
         '''
         return _grow(self.ink, LABEL_DISTANCE * self.padding / 2.0)
 
-    @property
+    @cached_property
+    def dot_ring(self) -> Polygon:
+        '''
+        Outline on which the binder dot of an overflow label sits: the ink grown
+        by the dot radius + `DOT_GAP_MM` (at most the padding), so the dot is
+        beside the real letters.
+
+        Returns
+        -------
+        ring : Polygon
+            grown ink, relative to the drawing point
+        '''
+        dot_mm = math.sqrt(BINDER_DOT_SIZE) / 2.0 * 25.4 / 72.0
+        return _grow(self.ink, min((dot_mm + DOT_GAP_MM) / MM_PER_UNIT, self.padding))
+
+    @cached_property
+    def pad_hull(self) -> Polygon:
+        '''
+        Returns
+        -------
+        hull : Polygon
+            convex hull of the pad (cheap proxy for soft forces)
+        '''
+        return self.pad.convex_hull
+
+    @cached_property
     def overflow_exp(self) -> Polygon:
         '''
         Expanded shape of an overflow label (attached by a binder): the same

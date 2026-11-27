@@ -8,8 +8,10 @@ from typing import Dict, Hashable, Iterable, List, Optional, Tuple
 from shapely.geometry import LineString
 from shapely.strtree import STRtree
 
+from node_labeling.label.formatter import format_label_text
 from node_labeling.models.label_type import LabelType
 from node_labeling.utils.config import Config
+from node_labeling.utils.graph_lattice import GraphLattice
 from node_labeling.utils.constants import (
     EDGE_CLEARANCE_MM, LINE_WIDTH, MM_PER_UNIT, NODE_GAP_MM, NODE_SIZE, PADDING_MM, PLACEMENT_STEP_MM,
     SLIDER_STEP_MM, SLIDER_TOL_MM
@@ -56,6 +58,38 @@ class SlidingLabel:
     slider: Slider
     rules: LabelRules
     feasible: Feasible
+
+def collect_labels(lattice: GraphLattice, cfg: Config) -> List[Tuple[int, Hashable, LabelType, str]]:
+    '''
+    All labels to place, numbered in the order general, extent, intent (per
+    type in node order), as v1 numbers them.
+
+    Parameters
+    ----------
+    lattice : GraphLattice
+        lattice structure and labels
+    cfg : Config
+        configuration (label types, formatting)
+
+    Returns
+    -------
+    labels : List[Tuple[int, Hashable, LabelType, str]]
+        (label id, node id, label type, formatted text)
+    '''
+    texts = {
+        LabelType.GENERAL: lambda nid: lattice.general(nid),
+        LabelType.EXTENT: lambda nid: ', '.join(sorted(str(g) for g in lattice.extent(nid))),
+        LabelType.INTENT: lambda nid: ', '.join(sorted(str(m) for m in lattice.intent(nid))),
+    }
+    labels = []
+    for label_type in (LabelType.GENERAL, LabelType.EXTENT, LabelType.INTENT):
+        if not cfg.label_config[label_type]:
+            continue
+        for nid in lattice.nodes:
+            text = format_label_text(cfg, texts[label_type](nid), label_type)
+            if text:
+                labels.append((len(labels), nid, label_type, text))
+    return labels
 
 def prepare_labels(
         G: nx.Graph,

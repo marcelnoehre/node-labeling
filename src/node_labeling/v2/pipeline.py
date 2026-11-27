@@ -1,7 +1,7 @@
 import time
 
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from node_labeling.utils.config import Config
 from node_labeling.v2.utils.visualize import plot_graph
@@ -10,13 +10,13 @@ from node_labeling.utils.graph_lattice import GraphLattice
 from node_labeling.v2.models.label_candidate import LabelCandidate
 from node_labeling.topology.planarize import *
 from node_labeling.topology.faces import *
-from node_labeling.v2.label.generate_candidates import *
 from node_labeling.v2.filter.shape_rules import build_obstacles
-from node_labeling.v2.label.sliding import prepare_labels, place_labels
-from node_labeling.v2.label.generate_overflow import *
-from node_labeling.v2.overflow.bounded import *
-from node_labeling.v2.overflow.unbounded import *
-from node_labeling.v2.forces.forces import *
+from node_labeling.v2.label.sliding import collect_labels, prepare_labels, place_labels
+from node_labeling.v2.models.candidate import Candidate
+from node_labeling.v2.overflow.binders import Layout
+from node_labeling.v2.overflow.bounded import bounded_overflow_labels
+from node_labeling.v2.overflow.unbounded import unbounded_overflow_labels
+from node_labeling.v2.forces.forces import optimize_overflow_labels
 
 def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> Optional[Dict[int, LabelCandidate]]:
     '''
@@ -98,17 +98,10 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
             show_face_areas=True
         )
 
-    # labels on sliders: shapes, sliders and feasible sets (T5/T6). The box candidates are only kept
-    # for the overflow stages, which still work on boxes.
+    # labels on sliders: shapes, sliders and feasible sets (T5/T6)
     start_time = time.perf_counter()
-    initial_candidates = generate_label_candidates(G, lattice, cfg)
     obstacles = build_obstacles(G, lattice, alpha_shape)
-    sliding_labels = prepare_labels(
-        G,
-        [(lid, cands[0].node_id, cands[0].label_type, cands[0].text) for lid, cands in initial_candidates.items()],
-        obstacles,
-        cfg
-    )
+    sliding_labels = prepare_labels(G, collect_labels(lattice, cfg), obstacles, cfg)
     feasible_duration = (time.perf_counter() - start_time) * 1000
     if cfg.runtime:
         print(f"\033[1;36m[RUNTIME]\033[0m Sliders and feasible sets: \033[1;32m{feasible_duration:.2f} ms\033[0m")
@@ -116,10 +109,15 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
     # continuous placement on the sliders
     start_time = time.perf_counter()
     placed = place_labels(sliding_labels, obstacles)
-    label_candidates = {
-        lid: [LabelCandidate.from_candidate(candidate)] if candidate is not None else []
-        for lid, candidate in placed.items()
+    direct = {lid: candidate for lid, candidate in placed.items() if candidate is not None}
+    overflow = {
+        L.label_id: Candidate(
+            label_id=L.label_id, node_id=L.node_id, node_pos=L.slider.node, label_type=L.label_type,
+            text=L.text, shape=L.shape, position=L.slider.node, overflow=True
+        )
+        for L in sliding_labels if placed[L.label_id] is None
     }
+    layout = Layout.build(G, obstacles, list(direct.values()))
     placement_duration = (time.perf_counter() - start_time) * 1000
     if cfg.runtime:
         print(f"\033[1;36m[RUNTIME]\033[0m Sliding placement: \033[1;32m{placement_duration:.2f} ms\033[0m")
@@ -129,24 +127,21 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
             nodes,
             relations,
             output_path='figs/placed.pdf',
-            label_candidates=label_candidates,
+            label_candidates=_label_candidates(direct, overflow),
             colored_label_candidates=True
         )
-
-    overflow_candidates = generate_overflow_candidates(G, label_candidates, initial_candidates)
-    if cfg.plot:
         plot_graph(
             G,
             nodes,
             relations,
             output_path='figs/all_overflow_candidates.pdf',
-            label_candidates=label_candidates,
+            label_candidates=_label_candidates(direct, overflow),
             colored_label_candidates=True,
-            overflow_candidates=overflow_candidates
+            overflow_candidates=_overflow_candidates(overflow)
         )
 
     start_time = time.perf_counter()
-    overflow_candidates = bounded_overflow_labels(G, label_candidates, overflow_candidates, bounded_faces, centroids, alpha_shape)
+    overflow = bounded_overflow_labels(layout, overflow, bounded_faces, centroids, alpha_shape)
     bounded_overflow_duration = (time.perf_counter() - start_time) * 1000
     if cfg.runtime:
         print(f"\033[1;36m[RUNTIME]\033[0m Bounded overflow runtime: \033[1;32m{bounded_overflow_duration:.2f} ms\033[0m")
@@ -156,13 +151,13 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
             nodes,
             relations,
             output_path='figs/bounded_overflow_candidates.pdf',
-            label_candidates=label_candidates,
+            label_candidates=_label_candidates(direct, overflow),
             colored_label_candidates=True,
-            overflow_candidates=overflow_candidates
+            overflow_candidates=_overflow_candidates(overflow)
         )
 
-    unbounded: List[int] = [lid for lid, ol in overflow_candidates.items() if ol.anchor.anchor_type == AnchorType.O]
-    grid_candidates, overflow_candidates, grid_duration, hungarian_duration = unbounded_overflow_labels(G, label_candidates, overflow_candidates, alpha_shape, cfg)
+    unbounded = [lid for lid, candidate in overflow.items() if candidate.binder is None]
+    grid_candidates, overflow, grid_duration, hungarian_duration = unbounded_overflow_labels(layout, overflow, alpha_shape, cfg)
     if cfg.runtime:
         print(f"\033[1;36m[RUNTIME]\033[0m Grid creation runtime: \033[1;32m{grid_duration:.2f} ms\033[0m")
         print(f"\033[1;36m[RUNTIME]\033[0m Hungarian solver runtime: \033[1;32m{hungarian_duration:.2f} ms\033[0m")
@@ -172,29 +167,32 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
             nodes,
             relations,
             output_path='figs/unbounded_grid_candidates.pdf',
-            label_candidates=label_candidates,
+            label_candidates=_label_candidates(direct, overflow),
             colored_label_candidates=True,
-            overflow_candidates=overflow_candidates,
-            grid_candidates=grid_candidates
+            overflow_candidates=_overflow_candidates(overflow),
+            grid_candidates={
+                lid: [(LabelCandidate.from_candidate(c), cost) for c, cost in cands]
+                for lid, cands in grid_candidates.items()
+            }
         )
         plot_graph(
             G,
             nodes,
             relations,
             output_path='figs/unbounded_overflow_candidates.pdf',
-            label_candidates=label_candidates,
+            label_candidates=_label_candidates(direct, overflow),
             colored_label_candidates=True,
-            overflow_candidates=overflow_candidates
+            overflow_candidates=_overflow_candidates(overflow)
         )
 
     start_time = time.perf_counter()
-    overflow_candidates = optimize_overflow_labels(G, label_candidates, overflow_candidates, unbounded, alpha_shape, cfg)
+    overflow = optimize_overflow_labels(layout, overflow, unbounded, alpha_shape, cfg)
     force_duration = (time.perf_counter() - start_time) * 1000
-
-    for ol in overflow_candidates.values():
-        ol.tighten_anchor()
     if cfg.runtime:
         print(f"\033[1;36m[RUNTIME]\033[0m Force refinement runtime: \033[1;32m{force_duration:.2f} ms\033[0m")
+
+    label_candidates = _label_candidates(direct, overflow)
+    overflow_candidates = _overflow_candidates(overflow)
     if cfg.plot:
         plot_graph(
             G,
@@ -226,3 +224,35 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
         **overflow_candidates
     }
     return labels
+
+def _label_candidates(direct: Dict[int, Candidate], overflow: Dict[int, Candidate]) -> Dict[int, List[LabelCandidate]]:
+    '''
+    Parameters
+    ----------
+    direct : Dict[int, Candidate]
+        labels placed at their nodes
+    overflow : Dict[int, Candidate]
+        overflow labels
+
+    Returns
+    -------
+    label_candidates : Dict[int, List[LabelCandidate]]
+        placed labels for plotting and the return value (empty list for overflow labels)
+    '''
+    out: Dict[int, List[LabelCandidate]] = {lid: [LabelCandidate.from_candidate(c)] for lid, c in direct.items()}
+    out.update({lid: [] for lid in overflow})
+    return dict(sorted(out.items()))
+
+def _overflow_candidates(overflow: Dict[int, Candidate]) -> Dict[int, LabelCandidate]:
+    '''
+    Parameters
+    ----------
+    overflow : Dict[int, Candidate]
+        overflow labels
+
+    Returns
+    -------
+    overflow_candidates : Dict[int, LabelCandidate]
+        overflow labels for plotting and the return value
+    '''
+    return {lid: LabelCandidate.from_candidate(c) for lid, c in sorted(overflow.items())}

@@ -3,14 +3,14 @@ import numpy as np
 
 from typing import List, Dict, Tuple, Optional
 from scipy.optimize import linear_sum_assignment
+from shapely.geometry import Point
 
 from node_labeling.utils.config import Config
-from node_labeling.v2.utils.geometry import *
-from node_labeling.v2.models.label_candidate import LabelCandidate
+from node_labeling.v2.models.candidate import Candidate
 
 def _build_cost_matrix_with_penalties(
     label_ids: List[int],
-    cand_by_i: List[List[Tuple[LabelCandidate, float]]],
+    cand_by_i: List[List[Tuple[Candidate, float]]],
     top_k: int,
     penalty_table: Dict[Tuple[int, int], float],
     cfg: Config
@@ -23,7 +23,7 @@ def _build_cost_matrix_with_penalties(
     ----------
     label_ids : List[int]
         unplaced labels
-    cand_by_i : List[List[Tuple[LabelCandidate, float]]]
+    cand_by_i : List[List[Tuple[Candidate, float]]]
         each candidate with an assigned cost given by label id
     top_k : int
         top k candidates to keep
@@ -48,9 +48,8 @@ def _build_cost_matrix_with_penalties(
     return matrix
 
 def _find_conflicting_pairs(
-    G: nx.Graph,
     label_ids: List[int],
-    assignment: Dict[int, Optional[Tuple[LabelCandidate, float]]],
+    assignment: Dict[int, Optional[Tuple[Candidate, float]]],
     cfg: Config
 ) -> List[Tuple[int, int]]:
     '''
@@ -58,11 +57,9 @@ def _find_conflicting_pairs(
     
     Parameters
     ----------
-    G : nx.Graph
-        graph containing positions
     label_ids : List[int]
         unplaced labels
-    assignment : Dict[int, Optional[Tuple[LabelCandidate, float]]]
+    assignment : Dict[int, Optional[Tuple[Candidate, float]]]
         candidate assigned for each label id
     cfg : Config
         configuration
@@ -78,22 +75,20 @@ def _find_conflicting_pairs(
         for b in range(a + 1, len(ids_with_cand)):
             lid_a = ids_with_cand[a]
             lid_b = ids_with_cand[b]
-            if _conflict_cost(G, assignment[lid_a], assignment[lid_b], cfg) > 0.0:
+            if _conflict_cost(assignment[lid_a], assignment[lid_b], cfg) > 0.0:
                 conflicts.append((lid_a, lid_b))
 
     return conflicts
 
-def _conflict_cost(G : nx.Graph, a: Tuple[LabelCandidate, float], b: Tuple[LabelCandidate, float], cfg: Config) -> float:
+def _conflict_cost(a: Tuple[Candidate, float], b: Tuple[Candidate, float], cfg: Config) -> float:
     '''
     Conflict cost for two label candidates.
 
     Parameters
     ----------
-    G : nx.Graph
-        graph containing positions
-    a: Tuple[LabelCandidate, float]
+    a: Tuple[Candidate, float]
         label candidate a 
-    b: Tuple[LabelCandidate, float]
+    b: Tuple[Candidate, float]
         label candidate b
     cfg: Config
         configuration
@@ -103,14 +98,14 @@ def _conflict_cost(G : nx.Graph, a: Tuple[LabelCandidate, float], b: Tuple[Label
     cost : float
         conflict cost between candidates a and b
     '''
-    pad_poly_a = Polygon(a[0].pad_bbox_corners)
-    exp_poly_a = Polygon(a[0].exp_bbox_corners)
-    anchor_a = Point(a[0].anchor.pos)
-    binder_a = LineString([a[0].anchor.pos, G.nodes[a[0].node_id]['pos']])
-    pad_poly_b = Polygon(b[0].pad_bbox_corners)
-    exp_poly_b = Polygon(b[0].exp_bbox_corners)
-    anchor_b = Point(b[0].anchor.pos)
-    binder_b = LineString([b[0].anchor.pos, G.nodes[b[0].node_id]['pos']])
+    pad_poly_a, exp_poly_a = a[0].pad, a[0].exp
+    anchor_a = Point(a[0].binder.end)
+    binder_a = a[0].binder.line
+
+    pad_poly_b, exp_poly_b = b[0].pad, b[0].exp
+    anchor_b = Point(b[0].binder.end)
+    binder_b = b[0].binder.line
+
     cost = 0.0
 
     if pad_poly_a.intersects(pad_poly_b):
@@ -139,8 +134,8 @@ def _conflict_cost(G : nx.Graph, a: Tuple[LabelCandidate, float], b: Tuple[Label
 
 def _greedy_assignment(
     label_ids: List[int],
-    candidates: Dict[int, List[Tuple[LabelCandidate, float]]],
-) -> Dict[int, Optional[Tuple[LabelCandidate, float]]]:
+    candidates: Dict[int, List[Tuple[Candidate, float]]],
+) -> Dict[int, Optional[Tuple[Candidate, float]]]:
     '''
     Greedy fallback if the hungarian solver is too expensive.
 
@@ -148,12 +143,12 @@ def _greedy_assignment(
     ----------
     label_ids : List[int]
         unplaced labels
-    candidates : Dict[int, List[Tuple[LabelCandidate, float]]]
+    candidates : Dict[int, List[Tuple[Candidate, float]]]
         candidates with an assigned cost
     
     Returns
     -------
-    assignment : Dict[int, Optional[Tuple[LabelCandidate, float]]]
+    assignment : Dict[int, Optional[Tuple[Candidate, float]]]
         chosen grid candidates by label id
     '''
     assignment: Dict[int, Optional[dict]] = {}
@@ -162,7 +157,7 @@ def _greedy_assignment(
     for lid in order:
         chosen = None
         for cand in candidates.get(lid, []):
-            cand_poly = Polygon(cand[0].pad_bbox_corners)
+            cand_poly = cand[0].pad
             if not any(cand_poly.intersects(pb) for pb in placed_bboxes):
                 chosen = cand
                 break
@@ -171,7 +166,7 @@ def _greedy_assignment(
             chosen = candidates[lid][0]
         
         if chosen:
-            chosen_poly = Polygon(chosen[0].pad_bbox_corners)
+            chosen_poly = chosen[0].pad
             placed_bboxes.append(chosen_poly)
         
         assignment[lid] = chosen
@@ -179,31 +174,28 @@ def _greedy_assignment(
     return assignment
 
 def _repair_overlaps(
-        G: nx.Graph,
-        label_ids: List[int], 
-        candidates: Dict[int, List[Tuple[LabelCandidate, float]]], 
-        assignment: Dict[int, Optional[Tuple[LabelCandidate, float]]], 
+            label_ids: List[int], 
+        candidates: Dict[int, List[Tuple[Candidate, float]]], 
+        assignment: Dict[int, Optional[Tuple[Candidate, float]]], 
         cfg: Config
-    ) -> Dict[int, Optional[Tuple[LabelCandidate, float]]]:
+    ) -> Dict[int, Optional[Tuple[Candidate, float]]]:
     '''
     Repair overlaps locally if they dont add much extra cost.
 
     Parameters
     ---------- 
-    G : nx.Graph
-        graph containing positions
     label_ids : List[int]
         unplaced labels
-    candidates : Dict[int, List[Tuple[LabelCandidate, float]]]
+    candidates : Dict[int, List[Tuple[Candidate, float]]]
         candidates with an assigned cost
-    assignment : Dict[int, Optional[Tuple[LabelCandidate, float]]]
+    assignment : Dict[int, Optional[Tuple[Candidate, float]]]
         chosen grid candidates by label id
     cfg : Config
         configuration
 
     Returns
     -------
-    assignment : Dict[int, Optional[Tuple[LabelCandidate, float]]]
+    assignment : Dict[int, Optional[Tuple[Candidate, float]]]
         refined adjustment
     '''
     for _ in range(cfg.max_hungarian_fixes):
@@ -218,13 +210,13 @@ def _repair_overlaps(
                     continue
                 cb = assignment[lid_b]
                 
-                if _conflict_cost(G, ca, cb, cfg) > 0:
+                if _conflict_cost(ca, cb, cfg) > 0:
                     best_alt = ca
                     # Wrap the generator in list()
-                    min_conflict = sum(_conflict_cost(G, ca, assignment[o], cfg) for o in label_ids if o != lid_a and assignment.get(o))
+                    min_conflict = sum(_conflict_cost(ca, assignment[o], cfg) for o in label_ids if o != lid_a and assignment.get(o))
 
                     for alt in candidates.get(lid_a, []):
-                        new_conflict = sum(_conflict_cost(G, alt, assignment[o], cfg) for o in label_ids if o != lid_a and assignment.get(o))
+                        new_conflict = sum(_conflict_cost(alt, assignment[o], cfg) for o in label_ids if o != lid_a and assignment.get(o))
                         
                         if new_conflict < min_conflict:
                             min_conflict = new_conflict
@@ -239,11 +231,10 @@ def _repair_overlaps(
     return assignment
 
 def hungarian_solver(
-    G: nx.Graph,
     label_ids: List[int],
-    candidates: Dict[int, List[Tuple[LabelCandidate, float]]],
+    candidates: Dict[int, List[Tuple[Candidate, float]]],
     cfg: Config
-) -> Dict[int, Optional[Tuple[LabelCandidate, float]]]:
+) -> Dict[int, Optional[Tuple[Candidate, float]]]:
     '''
     Iterative hungarian solver for an initial global assignment.
 
@@ -251,14 +242,14 @@ def hungarian_solver(
     ----------
     label_ids : List[int]
         unplaced labels
-    candidates : Dict[int, List[Tuple[LabelCandidate, float]]]
+    candidates : Dict[int, List[Tuple[Candidate, float]]]
         candidates with an assigned cost
     cfg : Config
         configuration
 
     Returns
     -------
-    assignment : Dict[int, Optional[Tuple[LabelCandidate, float]]]
+    assignment : Dict[int, Optional[Tuple[Candidate, float]]]
         chosen grid candidates by label id
     '''
     if not label_ids:
@@ -276,7 +267,7 @@ def hungarian_solver(
         for iteration in range(cfg.max_hungarian_iterations):
             matrix = _build_cost_matrix_with_penalties(label_ids, cand_by_i, cfg.top_k, penalty_table, cfg)
             row_i, col_i = linear_sum_assignment(matrix)
-            current_assignment: Dict[int, Tuple[LabelCandidate, float]] = {}
+            current_assignment: Dict[int, Tuple[Candidate, float]] = {}
             current_chosen_idx: Dict[int, int] = {}
             
             current_base_sum = 0.0
@@ -294,9 +285,9 @@ def hungarian_solver(
                     current_chosen_idx[lid] = -1
                     current_base_sum += cfg.w_miss
 
-            conflict_pairs = _find_conflicting_pairs(G, label_ids, current_assignment, cfg)
+            conflict_pairs = _find_conflicting_pairs(label_ids, current_assignment, cfg)
             current_conflict_sum = sum(
-                _conflict_cost(G, current_assignment[la], current_assignment[lb], cfg)
+                _conflict_cost(current_assignment[la], current_assignment[lb], cfg)
                 for la, lb in conflict_pairs
             )
 
@@ -313,7 +304,7 @@ def hungarian_solver(
                 a, b = label_ids.index(lid_a), label_ids.index(lid_b)
                 ka, kb = current_chosen_idx[lid_a], current_chosen_idx[lid_b]
                 
-                pair_cost = _conflict_cost(G, current_assignment[lid_a], current_assignment[lid_b], cfg)
+                pair_cost = _conflict_cost(current_assignment[lid_a], current_assignment[lid_b], cfg)
                 scale = cfg.iter_penalty_multiplier ** iteration
                 
                 if ka >= 0:
@@ -330,4 +321,4 @@ def hungarian_solver(
         if assignment.get(lid) is None and candidates.get(lid):
             assignment[lid] = candidates[lid][0]
 
-    return _repair_overlaps(G, label_ids, candidates, assignment, cfg)
+    return _repair_overlaps(label_ids, candidates, assignment, cfg)

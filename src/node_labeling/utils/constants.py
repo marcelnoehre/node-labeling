@@ -24,6 +24,7 @@ PADDING_MM: float = 1.45
 PADDING_FONT_PT: float = 8.0
 EDGE_CLEARANCE_MM: float = 0.5
 NODE_GAP_MM: float = 0.5
+DOT_GAP_MM: float = 0.5
 LABEL_DISTANCE: float = 2 ** 0.5
 OUTER_NODE_DIST: float = 0.25
 SLIDER_STEP_MM: float = 0.1

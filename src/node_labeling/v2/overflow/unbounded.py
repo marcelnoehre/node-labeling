@@ -1,224 +1,93 @@
 import time
 import warnings
-import networkx as nx
+import shapely
 
 from dataclasses import replace
+from typing import Dict, List, Tuple
 
-from typing import Dict, List
 from shapely import unary_union
 from shapely.geometry import Polygon
 
 from node_labeling.utils.config import Config
-from node_labeling.v2.models.label_candidate import LabelCandidate
-from node_labeling.models.anchor import AnchorType
-from node_labeling.v2.utils.geometry import *
-from node_labeling.v2.overflow.grid import *
-from node_labeling.v2.overflow.grid import _generate_candidates
-from node_labeling.v2.overflow.hungarian import *
-
-def _adjust_anchors(
-        G: nx.Graph, 
-        label_candidates: Dict[int, List[LabelCandidate]], 
-        overflow_candidates: Dict[int, LabelCandidate], 
-        unbounded_overflow_labels: List[int],
-        alpha_polygon: Polygon
-    ) -> Dict[int, LabelCandidate]:
-    '''
-    Translate label to improve anchoring.
-
-    Parameters
-    ----------
-    G : nx.Graph
-        graph containing positions
-    label_candidates: Dict[int, List[LabelCandidate]], 
-        already placed candidates
-    overflow_candidates: Dict[int, LabelCandidate], 
-        placed overflow candidates
-    unbounded_overflow_labels: List[int],
-        overflow labels that are placed in the graph's exterior
-    alpha_polygon: Polygon
-        polygon of the drawing
-
-    Returns
-    -------
-    overflow_candidates: Dict[int, LabelCandidate]
-        refined overflow candidates
-    '''
-    sorted_unbounded_overflow_labels = sorted(
-        unbounded_overflow_labels, 
-        key=lambda lid: Point(overflow_candidates[lid].anchor.pos).distance(alpha_polygon)
-    )
-
-    for lid in sorted_unbounded_overflow_labels:
-        ol = overflow_candidates[lid]
-        if ol.anchor.anchor_type == AnchorType.O:
-            continue
-        cx, cy = ol.center
-        anchor_candidates = [
-            Anchor(at, *ol.center, *ol.pad_bbox_corners)
-            for at in AnchorType if at != AnchorType.O
-        ]
-
-        label_center = np.array([cx, cy])
-        node_pos = G.nodes[ol.node_id]['pos']
-        node_pt = np.array(node_pos)
-        vec = node_pt - label_center
-        dist_to_node = np.linalg.norm(vec)
-        unit = vec / dist_to_node if dist_to_node > 0 else vec
-        scored_anchors: List[Tuple[float, Anchor]] = []
-        for anchor in anchor_candidates:
-            va = np.array(anchor.pos) - label_center
-            na = np.linalg.norm(va)
-            align = float(np.dot(unit, va / na)) if na > 0 else -1.0
-            scored_anchors.append((align, anchor))
-
-        scored_anchors.sort(key=lambda x: x[0], reverse=True)
-
-        for _, anchor in scored_anchors:
-            if ol.anchor.anchor_type == anchor.anchor_type:
-                break
-
-            anchor_offset_from_center = np.array(anchor.pos) - label_center
-            fixed_anchor_pos = np.array(ol.anchor.pos)
-            new_center = fixed_anchor_pos - anchor_offset_from_center
-            pw, ph = label_wh(ol.pad_bbox_corners)
-            new_corners = bbox_corners(*new_center, pw/2, ph/2)
-            new_anchor = Anchor(anchor.anchor_type, *ol.anchor.pos, *new_corners)
-
-            tmp_ol = copy.deepcopy(ol)
-            tmp_ol.update_position(*new_center, new_anchor)
-
-            tmp_pad_poly = Polygon(tmp_ol.pad_bbox_corners)
-            tmp_exp_poly = Polygon(tmp_ol.exp_bbox_corners)
-
-            if tmp_exp_poly.intersects(alpha_polygon):
-                continue # overlaps graph
-
-            if any(tmp_exp_poly.intersects(l[0].pad_poly) for l in label_candidates.values() if l):
-                continue # overlaps with existing label
-    
-            others = [
-                oc for o_lid, oc in overflow_candidates.items()
-                if o_lid != lid and oc.anchor.anchor_type != AnchorType.O
-            ]
-
-            if any(tmp_exp_poly.intersects(Polygon(oc.exp_bbox_corners)) for oc in others):
-                continue # overlaps another overflow label
- 
-            if any(
-                tmp_pad_poly.intersects(LineString([G.nodes[oc.node_id]['pos'], oc.anchor.pos])) 
-                for oc in others
-            ):
-                continue # overlaps with a binder of another overflow label
-
-            overflow_candidates[lid] = tmp_ol
-            break
-
-    return overflow_candidates
+from node_labeling.v2.models.candidate import Candidate
+from node_labeling.v2.overflow.binders import Layout
+from node_labeling.v2.overflow.grid import _generate_candidates, grid_overflow_candidates
+from node_labeling.v2.overflow.hungarian import hungarian_solver
+from node_labeling.v2.utils.geometry import angle_from_centroid, angular_gap_between
 
 def unbounded_overflow_labels(
-        G: nx.Graph,
-        label_candidates: Dict[int, List[LabelCandidate]],
-        overflow_candidates: Dict[int, LabelCandidate],
+        layout: Layout,
+        overflow: Dict[int, Candidate],
         alpha_shape: List[int],
         cfg: Config
-    ) -> Tuple[Dict[int, List[Tuple[LabelCandidate, float]]], Dict[int, LabelCandidate], float, float]:
+) -> Tuple[Dict[int, List[Tuple[Candidate, float]]], Dict[int, Candidate], float, float]:
     '''
-    Place remaining overflow labels in the graph exterior.
+    Place the remaining overflow labels outside the diagram: grid positions per
+    label, then the iterative Hungarian assignment. The binder attachment comes
+    with each position (nearest point of the dot ring), so v1's corner swap
+    (`_adjust_anchors`) is gone.
 
     Parameters
     ----------
-    G : nx.Graph
-        graph containing positions
-    label_candidates : Dict[int, List[LabelCandidate]]
-        already placed label candidates
-    overflow_candidates : Dict[int, LabelCandidate]
-        all overflow candidates
+    layout : Layout
+        fixed context
+    overflow : Dict[int, Candidate]
+        overflow labels, unplaced ones without binder
     alpha_shape : List[int]
         boundary walk of the alpha shape
-    cfg: Config
+    cfg : Config
         configuration
 
     Returns
     -------
-    grid_candidates : Dict[int, List[Tuple[LabelCandidate, float]]]
-        valid grid candidates
-    overflow_candidates : Dict[int, LabelCandidate]
-        updated overflow candidates
+    grid_candidates : Dict[int, List[Tuple[Candidate, float]]]
+        scored grid positions per label
+    overflow : Dict[int, Candidate]
+        overflow labels, placed where possible
     grid_duration : float
-        runtime for building the grid
+        runtime of the grid in ms
     hungarian_duration : float
-        runtime of the hungarian solver
+        runtime of the assignment in ms
     '''
-    alpha_pos = [G.nodes[nid]['pos'] for nid in alpha_shape]
-    alpha_N = len(alpha_shape)
-    alpha_polygon = Polygon(alpha_pos)
+    alpha_polygon = Polygon([layout.node_pos(n) for n in alpha_shape])
+    shapely.prepare(alpha_polygon)
     centroid = (alpha_polygon.centroid.x, alpha_polygon.centroid.y)
-    placed_union = unary_union([
-        candidate.exp_poly
-        for candidates in label_candidates.values()
-        for candidate in candidates
-    ]) if label_candidates else Polygon()
-    node_angles = sorted(
-        [(angle_from_centroid(centroid, G.nodes[nid]['pos']), nid) for nid in alpha_shape],
-        key=lambda x: x[0]
-    )
+    placed_union = unary_union([c.exp for c in layout.direct]) if layout.direct else Polygon()
+    shapely.prepare(placed_union)
+
+    node_angles = sorted((angle_from_centroid(centroid, layout.node_pos(n)), n) for n in alpha_shape)
     gaps = []
-    for i in range(alpha_N):
-        a_left,  node_left  = node_angles[i]
-        a_right, node_right = node_angles[(i + 1) % alpha_N]
-        gaps.append({
-            'a_left': a_left, 
-            'a_right': a_right,
-            'gap_size': angular_gap_between(a_left, a_right),
-            'node_left': node_left, 
-            'node_right': node_right,
-            'assigned': []
-        })
+    for i in range(len(node_angles)):
+        a_left, _ = node_angles[i]
+        a_right, _ = node_angles[(i + 1) % len(node_angles)]
+        gaps.append({'a_left': a_left, 'a_right': a_right, 'gap_size': angular_gap_between(a_left, a_right), 'assigned': []})
 
-    # assign unplaced overflow labels to their natural gap
-    unplaced_overflow = {
-        lid: ol 
-        for lid, ol in overflow_candidates.items() 
-        if ol.anchor.anchor_type == AnchorType.O
-    }
-    placed_overflow = {
-        lid: ol 
-        for lid, ol in overflow_candidates.items() 
-        if ol.anchor.anchor_type != AnchorType.O
-    }
-    for ol in unplaced_overflow.values():
-        outward_angle = angle_from_centroid(centroid, ol.center)
-        best_gap = max(
-            (g for g in gaps if angular_gap_between(g['a_left'], outward_angle) <= g['gap_size']),
-            key=lambda g: g['gap_size'],
-            default=max(gaps, key=lambda g: g['gap_size'])
-        )
-        if ol.node_id not in best_gap['assigned']:
-            best_gap['assigned'].append(ol.node_id)
+    unplaced = [lid for lid, ol in overflow.items() if ol.binder is None]
+    for lid in unplaced:
+        ol = overflow[lid]
+        outward = angle_from_centroid(centroid, ol.node_pos)
+        gap = max((g for g in gaps if angular_gap_between(g['a_left'], outward) <= g['gap_size']),
+                  key=lambda g: g['gap_size'], default=max(gaps, key=lambda g: g['gap_size']))
+        if ol.node_id not in gap['assigned']:
+            gap['assigned'].append(ol.node_id)
 
-    start_time = time.perf_counter()
-    grid_candidates = grid_overflow_candidates(G, label_candidates, overflow_candidates, gaps, centroid, alpha_polygon, placed_union, placed_overflow, cfg)
-
-    for lid in [lid for lid, candidates in grid_candidates.items() if not candidates]:
-        relaxed_cfg = cfg
+    start = time.perf_counter()
+    grid = grid_overflow_candidates(layout, overflow, gaps, centroid, alpha_polygon, placed_union, cfg)
+    for lid in [lid for lid, cands in grid.items() if not cands]:
+        relaxed = cfg
         for _ in range(3):
-            relaxed_cfg = replace(relaxed_cfg, max_label_dist=relaxed_cfg.max_label_dist * 2)
-            grid_candidates[lid] = _generate_candidates(
-                lid, G, centroid, alpha_polygon, placed_union, placed_overflow,
-                label_candidates, overflow_candidates, relaxed_cfg
-            )
-            if grid_candidates[lid]:
+            relaxed = replace(relaxed, max_label_dist=relaxed.max_label_dist * 2)
+            grid[lid] = _generate_candidates(lid, layout, centroid, alpha_polygon, placed_union, overflow, relaxed)
+            if grid[lid]:
                 break
-    grid_duration = (time.perf_counter() - start_time) * 1000
-    
-    start_time = time.perf_counter()
-    assignment = hungarian_solver(G, sorted(grid_candidates.keys()), grid_candidates, cfg)
+    grid_duration = (time.perf_counter() - start) * 1000
+
+    start = time.perf_counter()
+    assignment = hungarian_solver(sorted(grid), grid, cfg)
     for lid, chosen in assignment.items():
         if chosen is None:
-            warnings.warn(f'Label {lid} ({overflow_candidates[lid].text!r}) could not be placed and is drawn at its node')
+            warnings.warn(f'Label {lid} ({overflow[lid].text!r}) could not be placed and is drawn at its node')
             continue
-        overflow_candidates[lid] = chosen[0]
-    hungarian_duration = (time.perf_counter() - start_time) * 1000
-
-    return grid_candidates, _adjust_anchors(G, label_candidates, overflow_candidates, unplaced_overflow.keys(), alpha_polygon), grid_duration, hungarian_duration
+        overflow[lid] = chosen[0]
+    hungarian_duration = (time.perf_counter() - start) * 1000
+    return grid, overflow, grid_duration, hungarian_duration

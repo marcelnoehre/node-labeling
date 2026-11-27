@@ -1,18 +1,16 @@
-import shapely
-import copy
 import numpy as np
-import networkx as nx
+import shapely
 
 from typing import Dict, List
 from shapely import unary_union
-from shapely.geometry import Polygon, Point, LineString
+from shapely.geometry import Polygon, Point
 from shapely.ops import nearest_points
 
-from node_labeling.models.anchor import Anchor, AnchorType
 from node_labeling.models.label_type import LabelType
-from node_labeling.v2.models.label_candidate import LabelCandidate
-from node_labeling.v2.utils.geometry import *
 from node_labeling.utils.config import Config
+from node_labeling.utils.shapely_utils import as_points
+from node_labeling.v2.models.candidate import Candidate
+from node_labeling.v2.overflow.binders import Layout, attach, binder_valid
 
 def cross2d(a: np.ndarray, b: np.ndarray) -> float:
     '''
@@ -21,189 +19,125 @@ def cross2d(a: np.ndarray, b: np.ndarray) -> float:
     return a[0] * b[1] - a[1] * b[0]
 
 def optimize_overflow_labels(
-    G: nx.Graph, 
-    label_candidates: Dict[int, List[LabelCandidate]], 
-    overflow_candidates: Dict[int, LabelCandidate], 
+    layout: Layout,
+    overflow: Dict[int, Candidate],
     unbounded_overflow_labels: List[int],
     alpha_shape: List[int],
     cfg: Config
-) -> Dict[int, LabelCandidate]:
+) -> Dict[int, Candidate]:
     '''
-    Refines overflow label positions using force-directed optimization 
-    calibrated for small-scale coordinate systems.
-    
+    Refines overflow label positions using force-directed optimization
+    calibrated for small-scale coordinate systems (v1's forces on shapes; the
+    binder attachment is re-picked after every move, see `attach`).
+
+    Soft forces use convex hulls of the pads; the guards use the exact shapes.
+
     Parameters
     ----------
-    G : nx.Graph
-        graph containing positions
-    label_candidates: Dict[int, List[LabelCandidate]], 
-        already placed candidates
-    overflow_candidates: Dict[int, LabelCandidate], 
-        placed overflow candidates
-    unbounded_overflow_labels: List[int],
+    layout : Layout
+        fixed context
+    overflow : Dict[int, Candidate]
+        overflow labels
+    unbounded_overflow_labels : List[int]
         overflow labels that are placed in the graph's exterior
-    alpha_shape: List[int]
+    alpha_shape : List[int]
         boundary walk of the drawing
     cfg : Config
         configuration
 
     Returns
     -------
-    overflow_candidates: Dict[int, LabelCandidate]
-        refined overflow candidates
+    overflow : Dict[int, Candidate]
+        refined overflow labels
     '''
-    alpha_polygon = Polygon([G.nodes[n]['pos'] for n in alpha_shape])
+    alpha_polygon = Polygon([layout.node_pos(n) for n in alpha_shape])
     drawing_centroid = np.array([alpha_polygon.centroid.x, alpha_polygon.centroid.y])
-    placed_polys = [
-        candidate.pad_poly
-        for candidates in label_candidates.values()
-        for candidate in candidates
-    ]
-    placed_union = unary_union(placed_polys + [alpha_polygon])
-    ink_polys = [
-        candidate.ink_poly
-        for candidates in label_candidates.values()
-        for candidate in candidates
-    ]
-    placed_ink_union = unary_union(ink_polys + [alpha_polygon])
+    placed_union = unary_union([c.pad for c in layout.direct] + [alpha_polygon])
+    placed_ink_union = unary_union([c.ink for c in layout.direct] + [alpha_polygon])
     shapely.prepare(placed_union)
     shapely.prepare(placed_ink_union)
+    ink_polys = [c.ink for c in layout.direct]
     ink_hulls = [ink.convex_hull for ink in ink_polys]
-    alpha_nodes = [
-        Point(G.nodes[nid]['pos']).buffer(0.15)
-        for nid in alpha_shape    
-    ]
+    alpha_nodes = [Point(layout.node_pos(n)).buffer(0.15) for n in alpha_shape]
 
-    movable = [lid for lid in unbounded_overflow_labels if overflow_candidates[lid].anchor.anchor_type != AnchorType.O]
+    movable = [lid for lid in unbounded_overflow_labels if overflow[lid].binder is not None]
 
-    # iterative force refinement
     for i in range(cfg.force_iterations):
-        pending: Dict[int, LabelCandidate] = {}
-        movable.sort(key=lambda lid: Point(overflow_candidates[lid].center).distance(placed_union))
+        pending: Dict[int, Candidate] = {}
+        movable.sort(key=lambda lid: Point(overflow[lid].position).distance(placed_union))
 
         for lid in movable:
-            ol = overflow_candidates[lid]
-            node_pos = np.array(G.nodes[ol.node_id]['pos'])
-            current_center = np.array(ol.center)
-            pad_bbox_poly = Polygon(ol.pad_bbox_corners)
-            ew, eh = label_wh(ol.exp_bbox_corners)
+            ol = overflow[lid]
+            node_pos = np.array(ol.node_pos)
+            current_center = np.array(ol.position)
+            hull = ol.pad_hull
+            ex0, ey0, ex1, ey1 = ol.exp.bounds
+            ew, eh = ex1 - ex0, ey1 - ey0
             force_vector = np.array([0.0, 0.0])
+            radial_vec = current_center - drawing_centroid
+            radial_unit = radial_vec / (np.linalg.norm(radial_vec) + 1e-6)
+            tangent_vec = np.array([-radial_unit[1], radial_unit[0]])
 
-            # repulsion from label candidates
+            # repulsion from labels at their nodes and boundary nodes
             threshold = max(ew, eh)
             for ink in ink_hulls + alpha_nodes:
-                p1, p2 = nearest_points(ink, pad_bbox_poly)
-                dist_to_ink = np.linalg.norm(np.array([p2.x - p1.x, p2.y - p1.y]))
-
+                p1, p2 = nearest_points(ink, hull)
+                dist_to_ink = np.hypot(p2.x - p1.x, p2.y - p1.y)
                 if dist_to_ink < threshold:
-                    radial_vec = current_center - drawing_centroid
-                    radial_unit = radial_vec / (np.linalg.norm(radial_vec) + 1e-6)
-                    tangent_vec = np.array([-radial_unit[1], radial_unit[0]])
-
-                    ink_center = np.array([ink.centroid.x, ink.centroid.y])
-                    vec_to_ink = ink_center - drawing_centroid
+                    vec_to_ink = np.array([ink.centroid.x, ink.centroid.y]) - drawing_centroid
                     side = cross2d(radial_unit, vec_to_ink / (np.linalg.norm(vec_to_ink) + 1e-6))
                     slide_dir = tangent_vec if side < 0 else -tangent_vec
+                    force_vector += slide_dir * (threshold - dist_to_ink) * cfg.w_inner_proximity
 
-                    mag = (threshold - dist_to_ink) * cfg.w_inner_proximity
-                    force_vector += slide_dir * mag
-
-            # tangential shift
+            # tangential shift away from other overflow labels
             threshold = max(ew, eh) * 0.5
             for o_lid in movable:
                 if lid == o_lid:
                     continue
-                o_ol = overflow_candidates[o_lid]
-                other_poly = Polygon(o_ol.pad_bbox_corners)
-                p1, p2 = nearest_points(pad_bbox_poly, other_poly)
-                dist = np.linalg.norm(np.array([p2.x - p1.x, p2.y - p1.y]))
+                o_ol = overflow[o_lid]
+                p1, p2 = nearest_points(hull, o_ol.pad_hull)
+                dist = np.hypot(p2.x - p1.x, p2.y - p1.y)
                 if dist < threshold:
-                    radial_vec = current_center - drawing_centroid
-                    radial_unit = radial_vec / (np.linalg.norm(radial_vec) + 1e-6)
-                    tangent_vec = np.array([-radial_unit[1], radial_unit[0]])
-
-                    vec_to_other = np.array(o_ol.center) - drawing_centroid
+                    vec_to_other = np.array(o_ol.position) - drawing_centroid
                     side = cross2d(radial_unit, vec_to_other / (np.linalg.norm(vec_to_other) + 1e-6))
                     slide_dir = tangent_vec if side < 0 else -tangent_vec
-                    
-                    mag = (threshold - dist) * cfg.w_global_proximity
-                    force_vector += slide_dir * mag
+                    force_vector += slide_dir * (threshold - dist) * cfg.w_global_proximity
 
-            # spring force pulling binder
-            node_pos = np.array(G.nodes[ol.node_id]['pos'])
-            anchor_pos = np.array(ol.anchor.pos)
-            binder = LineString([node_pos, anchor_pos])
-
+            # spring pulling the binder short
+            anchor_pos = np.array(ol.binder.end)
+            binder = ol.binder.line
             crossings = as_points(alpha_polygon.boundary.intersection(binder)) if binder.length > 0 else []
             if crossings:
                 anchor_pt = Point(anchor_pos)
-                closest_pt = min(crossings, key=lambda p: p.distance(anchor_pt))
-                intersection_pos = np.array(closest_pt.coords[0])
+                intersection_pos = np.array(min(crossings, key=lambda p: p.distance(anchor_pt)).coords[0])
             else:
                 intersection_pos = node_pos
-
             gap_vec = anchor_pos - intersection_pos
-            dist = np.linalg.norm(gap_vec) 
-
+            dist = np.linalg.norm(gap_vec)
             displacement = dist - cfg.min_binder_length + 0.1
-            mag = np.sign(displacement) * (displacement**2) * cfg.w_spring
-               
-            unit_dir = gap_vec / (dist + 1e-6)
-            force_vector -= unit_dir * mag
+            force_vector -= gap_vec / (dist + 1e-6) * np.sign(displacement) * displacement ** 2 * cfg.w_spring
 
             # binder repulsion
-            current_anchor_pt = ol.anchor.pos
-            binder_line = LineString([current_anchor_pt, node_pos])
-
-            radial_vec = current_center - drawing_centroid
-            radial_unit = radial_vec / (np.linalg.norm(radial_vec) + 1e-6)
-            tangent_vec = np.array([-radial_unit[1], radial_unit[0]])
-            
             binder_threshold = 0.2
-
-            def _apply_binder_repulsion(obstacle_poly: Polygon, obstacle_centroid_pt: Point):
-                '''
-                Push binder away from obstacles.
-
-                Parameters
-                ----------
-                obstacle_poly: Polygon
-                    polygon of obstacle
-                
-                obstacle_centroid_pt: Point
-                    center of the obstacle
-                '''
-                nonlocal force_vector
-                dist_binder = binder_line.distance(obstacle_poly)
-                
+            obstacles = [(p, p.centroid) for p in ink_hulls + alpha_nodes]
+            obstacles += [(o.pad_hull, o.pad_hull.centroid) for o_lid, o in overflow.items() if o_lid != lid and o.binder is not None]
+            for obstacle, obstacle_centroid in obstacles:
+                dist_binder = binder.distance(obstacle)
                 if dist_binder < binder_threshold:
-                    obs_center = np.array([obstacle_centroid_pt.x, obstacle_centroid_pt.y])
-                    vec_to_obs = obs_center - drawing_centroid
+                    vec_to_obs = np.array([obstacle_centroid.x, obstacle_centroid.y]) - drawing_centroid
                     side = cross2d(radial_unit, vec_to_obs / (np.linalg.norm(vec_to_obs) + 1e-6))
                     slide_dir = tangent_vec if side < 0 else -tangent_vec
-                    mag = (binder_threshold - dist_binder) * cfg.w_binder_dodge
-                    force_vector += slide_dir * mag
+                    force_vector += slide_dir * (binder_threshold - dist_binder) * cfg.w_binder_dodge
 
-            for ink_poly in ink_hulls + alpha_nodes:
-                _apply_binder_repulsion(ink_poly, ink_poly.centroid)
-
-            for o_lid, other_ol in overflow_candidates.items():
-                if o_lid == lid:
-                    continue
-                other_poly = Polygon(other_ol.pad_bbox_corners)
-                _apply_binder_repulsion(other_poly, other_poly.centroid)
-
-            if ol.label_type in [LabelType.INTENT, LabelType.EXTENT]:
-                pw, ph = label_wh(ol.pad_bbox_corners)
-                min_y = current_center[1] - ph/2
-                max_y = current_center[1] + ph/2
-                is_violating = (ol.label_type == LabelType.INTENT and min_y < node_pos[1]) or (ol.label_type == LabelType.EXTENT and max_y > node_pos[1])
-                if is_violating:
-                    up_vec = np.array([0.0, 1.0])
-                    side = cross2d(radial_unit, up_vec)
-                    direction_multiplier = 1.0 if ol.label_type == LabelType.INTENT else -1.0
-                    slide_dir = tangent_vec if (side * direction_multiplier) > 0 else -tangent_vec
-                    infringement = (node_pos[1] - min_y) if ol.label_type == LabelType.INTENT else (max_y - node_pos[1])
+            # half plane
+            if ol.label_type in (LabelType.INTENT, LabelType.EXTENT):
+                _, min_y, _, max_y = ol.pad.bounds
+                intent = ol.label_type == LabelType.INTENT
+                if (intent and min_y < node_pos[1]) or (not intent and max_y > node_pos[1]):
+                    side = cross2d(radial_unit, np.array([0.0, 1.0]))
+                    sign = 1.0 if intent else -1.0
+                    slide_dir = tangent_vec if side * sign > 0 else -tangent_vec
+                    infringement = (node_pos[1] - min_y) if intent else (max_y - node_pos[1])
                     force_vector += slide_dir * (infringement + 0.1) * cfg.w_half_plane
 
             cooling = 1.0 - (i / cfg.force_iterations)
@@ -211,89 +145,73 @@ def optimize_overflow_labels(
             force_mag = np.linalg.norm(force_vector)
             delta = force_vector * step_size
             if force_mag > 1.0:
-                delta = (force_vector / force_mag) * step_size
-
+                delta = force_vector / force_mag * step_size
             if np.linalg.norm(delta) < cfg.force_tolerance:
                 continue
 
-            proposed_center = current_center + delta
-
-            # guards
-            valid = True
-
-            pw, ph = label_wh(ol.pad_bbox_corners)
-            proposed_corners = bbox_corners(*proposed_center, pw/2, ph/2)
-            proposed_poly = Polygon(proposed_corners)
-            proposed_anchor = Anchor(ol.anchor.anchor_type, *proposed_center, *proposed_corners)
-            proposed_binder = LineString([proposed_anchor.pos, node_pos])
-
-            dist_current = alpha_polygon.distance(Polygon(ol.pad_bbox_corners))
-            dist_proposed = alpha_polygon.distance(proposed_poly)
-            if dist_proposed < cfg.min_binder_length:
-                if dist_proposed < dist_current:
-                    valid = False # < minimal binder length
-
-            if valid:
-                radial_dir = node_pos - drawing_centroid
-                label_dir = proposed_center - node_pos
-                if np.dot(radial_dir, label_dir) < -0.5:
-                    valid = False # keep labels outside
-
-            if valid:
-                if proposed_poly.intersects(placed_union):
-                    valid = False # poly overlaps drawing or the padding of a placed label
-
-            if valid:
-                for ink in ink_polys:
-                    if proposed_binder.intersects(ink):
-                        valid = False # binder overlaps label candidates
-                        
-            if valid:
-                if Point(proposed_anchor.pos).intersects(placed_ink_union):
-                    valid = False
-        
-            if valid:
-                for o_lid in movable:
-                    if o_lid == lid:
-                        continue
-                
-                    other = pending.get(o_lid, overflow_candidates[o_lid])
-                    other_poly_pad = Polygon(other.pad_bbox_corners)
-                    other_binder = LineString([other.anchor.pos, G.nodes[other.node_id]['pos']])
-
-                    if proposed_poly.intersects(other_poly_pad):
-                        valid = False
-                        break # poly overlaps overflow label
-
-                    if proposed_poly.intersects(other_binder):
-                        valid = False
-                        break # poly overlaps binder
-
-                    if Point(other.anchor.pos).distance(proposed_binder) < 0.15:
-                        valid = False
-                        break # binder too close to node
-
-                    if Point(proposed_anchor.pos).distance(other_binder) < 0.15:
-                        valid = False
-                        break # anchor too close to binder
-
-                    if Point(proposed_anchor.pos).distance(other_poly_pad) < 0.15:
-                        valid = False
-                        break # anchor too close to overflow label
-
-            if valid:
-                current_view = {**overflow_candidates, **pending}
-                if not binding_line_valid(G, lid, proposed_anchor, label_candidates, current_view, list(current_view.keys()), None, True):
-                    valid = False # invalid binding line
-
-            if valid:
-                moved = copy.deepcopy(ol)
-                moved.update_position(*proposed_center, proposed_anchor)
-                pending[lid] = moved
+            proposed = ol.moved(current_center + delta)
+            proposed = proposed.moved(proposed.position, attach(proposed))
+            if not _valid(layout, lid, ol, proposed, overflow, pending, movable, alpha_polygon,
+                          drawing_centroid, placed_union, placed_ink_union, ink_polys, cfg):
+                continue
+            pending[lid] = proposed
 
         if not pending:
-            return overflow_candidates
+            return overflow
+        overflow.update(pending)
 
-        overflow_candidates.update(pending)
+    return overflow
 
-    return overflow_candidates
+def _valid(
+        layout: Layout,
+        lid: int,
+        current: Candidate,
+        proposed: Candidate,
+        overflow: Dict[int, Candidate],
+        pending: Dict[int, Candidate],
+        movable: List[int],
+        alpha_polygon: Polygon,
+        drawing_centroid: np.ndarray,
+        placed_union,
+        placed_ink_union,
+        ink_polys: list,
+        cfg: Config
+) -> bool:
+    '''
+    Guards of a proposed move (v1's guards on shapes).
+
+    Returns
+    -------
+    valid : bool
+        whether the move is allowed
+    '''
+    node_pos = np.array(proposed.node_pos)
+    binder = proposed.binder
+    dist_proposed = alpha_polygon.distance(proposed.pad)
+    if dist_proposed < cfg.min_binder_length and dist_proposed < alpha_polygon.distance(current.pad):
+        return False # < minimal binder length
+    if np.dot(node_pos - drawing_centroid, np.array(proposed.position) - node_pos) < -0.5:
+        return False # keep labels outside
+    if proposed.pad.intersects(placed_union):
+        return False # overlaps the drawing or a label at its node
+    if any(binder.line.intersects(ink) for ink in ink_polys):
+        return False # binder through a label
+    end = Point(binder.end)
+    if end.intersects(placed_ink_union):
+        return False
+    for o_lid in movable:
+        if o_lid == lid:
+            continue
+        other = pending.get(o_lid, overflow[o_lid])
+        if proposed.pad.intersects(other.pad):
+            return False # overlaps another overflow label
+        if proposed.pad.intersects(other.binder.line):
+            return False # overlaps a binder
+        if Point(other.binder.end).distance(binder.line) < 0.15:
+            return False # binder too close to another attachment
+        if end.distance(other.binder.line) < 0.15:
+            return False # attachment too close to another binder
+        if end.distance(other.pad) < 0.15:
+            return False # attachment too close to another overflow label
+    view = {**overflow, **pending}
+    return binder_valid(layout, lid, proposed, binder, view, soft=True)

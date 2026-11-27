@@ -60,9 +60,11 @@ class LabelCandidate:
     @classmethod
     def from_candidate(cls, candidate: 'Candidate') -> 'LabelCandidate':
         '''
-        Wrap a label placed on its slider for the stages that still expect a
-        `LabelCandidate`. The anchor sits at the node; its type only names the
-        direction from the node to the label (dev plot colors).
+        Wrap a v2 label for plotting and the return value. Labels at their node:
+        the anchor sits at the node. Overflow labels: the anchor is the binder
+        attachment, or type O at the node if the label could not be placed. The
+        anchor type otherwise only names the direction from the node to the label
+        (dev plot colors).
 
         Parameters
         ----------
@@ -84,8 +86,14 @@ class LabelCandidate:
         nx_, ny = candidate.node_pos
         angle = math.atan2((y0 + y1) / 2.0 - ny, (x0 + x1) / 2.0 - nx_)
         anchor_type = DIRECTION_ANCHORS[round(angle / (math.pi / 4)) % 8]
+        anchor_pos = (nx_, ny)
+        if candidate.overflow:
+            if candidate.binder is None:
+                anchor_type = AnchorType.O
+            else:
+                anchor_pos = tuple(candidate.binder.end)
         anchor = Anchor(anchor_type, *candidate.position, *corners(pad))
-        anchor.pos = (nx_, ny)
+        anchor.pos = anchor_pos
         return cls(
             node_id=candidate.node_id, anchor=anchor, label_type=candidate.label_type,
             ink_bbox_corners=corners(ink), pad_bbox_corners=corners(pad), exp_bbox_corners=corners(exp),
