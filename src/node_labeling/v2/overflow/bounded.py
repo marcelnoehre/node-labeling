@@ -200,7 +200,7 @@ def _adjust_anchors(
             tmp_pad_poly = Polygon(tmp_ol.pad_bbox_corners)
             tmp_exp_poly = Polygon(tmp_ol.exp_bbox_corners)
 
-            if any(tmp_exp_poly.intersects(Polygon(l[0].pad_bbox_corners)) for l in label_candidates.values() if l):
+            if any(tmp_exp_poly.intersects(l[0].pad_poly) for l in label_candidates.values() if l):
                 continue # overlaps with existing label
     
             tmp_exp_interior = tmp_exp_poly.buffer(-1e-6)
@@ -426,7 +426,7 @@ def bounded_overflow_labels(
 
     # subtract expanded bboxes of placed labels from each face
     placed_union = unary_union([
-        Polygon(candidate.pad_bbox_corners)
+        candidate.pad_poly
         for candidates in label_candidates.values()
         for candidate in candidates
     ])

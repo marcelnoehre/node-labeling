@@ -1,4 +1,3 @@
-import copy
 import time
 
 from pathlib import Path
@@ -12,7 +11,8 @@ from node_labeling.v2.models.label_candidate import LabelCandidate
 from node_labeling.topology.planarize import *
 from node_labeling.topology.faces import *
 from node_labeling.v2.label.generate_candidates import *
-from node_labeling.v2.filter.filter import *
+from node_labeling.v2.filter.shape_rules import build_obstacles
+from node_labeling.v2.label.sliding import prepare_labels, place_labels
 from node_labeling.v2.label.generate_overflow import *
 from node_labeling.v2.overflow.bounded import *
 from node_labeling.v2.overflow.unbounded import *
@@ -98,100 +98,37 @@ def label(graphml: str, cfg: Optional[Config] = None, export: bool = False) -> O
             show_face_areas=True
         )
 
-    # initial set of label candidates
+    # labels on sliders: shapes, sliders and feasible sets (T5/T6). The box candidates are only kept
+    # for the overflow stages, which still work on boxes.
     start_time = time.perf_counter()
-    label_candidates = generate_label_candidates(G, lattice, cfg)
-    rendering_duration = (time.perf_counter() - start_time) * 1000
-    initial_candidates = copy.deepcopy(label_candidates)
+    initial_candidates = generate_label_candidates(G, lattice, cfg)
+    obstacles = build_obstacles(G, lattice, alpha_shape)
+    sliding_labels = prepare_labels(
+        G,
+        [(lid, cands[0].node_id, cands[0].label_type, cands[0].text) for lid, cands in initial_candidates.items()],
+        obstacles,
+        cfg
+    )
+    feasible_duration = (time.perf_counter() - start_time) * 1000
     if cfg.runtime:
-        print(f"\033[1;36m[RUNTIME]\033[0m Rendering runtime: \033[1;32m{rendering_duration:.2f} ms\033[0m")
-    if cfg.plot:
-        plot_graph(
-            G,
-            nodes,
-            relations,
-            output_path='figs/all_label_candidates.pdf',
-            label_candidates=label_candidates,
-            colored_label_candidates=True,
-            show_legend=True
-        )
+        print(f"\033[1;36m[RUNTIME]\033[0m Sliders and feasible sets: \033[1;32m{feasible_duration:.2f} ms\033[0m")
 
-    # filter outer nodes
+    # continuous placement on the sliders
     start_time = time.perf_counter()
-    label_candidates = restrict_outer_node_candidates(G, label_candidates, alpha_shape)
-    filter_out_duration = (time.perf_counter() - start_time) * 1000
+    placed = place_labels(sliding_labels, obstacles)
+    label_candidates = {
+        lid: [LabelCandidate.from_candidate(candidate)] if candidate is not None else []
+        for lid, candidate in placed.items()
+    }
+    placement_duration = (time.perf_counter() - start_time) * 1000
     if cfg.runtime:
-        print(f"\033[1;36m[RUNTIME]\033[0m Filter out runtime: \033[1;32m{filter_out_duration:.2f} ms\033[0m")
+        print(f"\033[1;36m[RUNTIME]\033[0m Sliding placement: \033[1;32m{placement_duration:.2f} ms\033[0m")
     if cfg.plot:
         plot_graph(
             G,
             nodes,
             relations,
-            output_path='figs/filtered_outer.pdf',
-            label_candidates=label_candidates,
-            colored_label_candidates=True
-        )
-
-    # filter unclear node assignment
-    start_time = time.perf_counter()
-    label_candidates = filter_candidates_by_nodes(G, label_candidates, nodes)
-    filter_node_duration = (time.perf_counter() - start_time) * 1000
-    if cfg.runtime:
-        print(f"\033[1;36m[RUNTIME]\033[0m Filter node runtime: \033[1;32m{filter_node_duration:.2f} ms\033[0m")
-    if cfg.plot:
-        plot_graph(
-            G,
-            nodes,
-            relations,
-            output_path='figs/filter_node.pdf',
-            label_candidates=label_candidates,
-            colored_label_candidates=True
-        )
-
-    # filter overlapping edges
-    start_time = time.perf_counter()
-    label_candidates = filter_candidates_by_edges(G, label_candidates)
-    filter_edge_duration = (time.perf_counter() - start_time) * 1000
-    if cfg.runtime:
-        print(f"\033[1;36m[RUNTIME]\033[0m Filter edge runtime: \033[1;32m{filter_edge_duration:.2f} ms\033[0m")
-    if cfg.plot:
-        plot_graph(
-            G,
-            nodes,
-            relations,
-            output_path='figs/filter_edges.pdf',
-            label_candidates=label_candidates,
-            colored_label_candidates=True
-        )
-
-    # filter by neighbor direction
-    start_time = time.perf_counter()
-    label_candidates = filter_candidates_by_neighbor_direction(G, label_candidates, lattice)
-    filter_neighbor_duration = (time.perf_counter() - start_time) * 1000
-    if cfg.runtime:
-        print(f"\033[1;36m[RUNTIME]\033[0m Filter neighbor runtime: \033[1;32m{filter_neighbor_duration:.2f} ms\033[0m")
-    if cfg.plot:
-        plot_graph(
-            G,
-            nodes,
-            relations,
-            output_path='figs/filtered_neighbor.pdf',
-            label_candidates=label_candidates,
-            colored_label_candidates=True
-        )
-
-    # filter by hybrid algorithm
-    start_time = time.perf_counter()
-    label_candidates = filter_hyrid(label_candidates)
-    filter_hybrid_duration = (time.perf_counter() - start_time) * 1000
-    if cfg.runtime:
-        print(f"\033[1;36m[RUNTIME]\033[0m Filter hybrid runtime: \033[1;32m{filter_hybrid_duration:.2f} ms\033[0m")
-    if cfg.plot:
-        plot_graph(
-            G,
-            nodes,
-            relations,
-            output_path='figs/filtered_hybrid.pdf',
+            output_path='figs/placed.pdf',
             label_candidates=label_candidates,
             colored_label_candidates=True
         )

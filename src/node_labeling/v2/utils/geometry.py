@@ -268,8 +268,8 @@ def binding_line_valid(
     
     for candidates in label_candidates.values():
         for cand in candidates:
-            ink_poly = Polygon(cand.ink_bbox_corners).buffer(0)
-            pad_poly = Polygon(cand.pad_bbox_corners).buffer(0)
+            ink_poly = cand.ink_poly
+            pad_poly = cand.pad_poly
 
             if soft:
                 # binder intersects ink bbox of a label

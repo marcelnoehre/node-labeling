@@ -3,7 +3,7 @@ import numpy as np
 import shapely
 
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from typing import Tuple
 from shapely import affinity
 from shapely.geometry import Point, Polygon
@@ -11,7 +11,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import nearest_points
 
 from node_labeling.utils.config import Config
-from node_labeling.utils.constants import MM_PER_UNIT, PADDING_MM, PADDING_FONT_PT, SHAPE_TOLERANCE_MM
+from node_labeling.utils.constants import MM_PER_UNIT, PADDING_MM, PADDING_FONT_PT, SHAPE_TOLERANCE_MM, LABEL_DISTANCE
 from node_labeling.v2.label.shape import measure_label_shape, font_size_pt
 
 @dataclass(frozen=True, eq=False)
@@ -105,6 +105,23 @@ class LabelShape:
             return self.overflow_exp
         reach = self.padding * away / np.max(np.abs(away))
         return _sweep_rect(self.pad, reach[0], reach[1])
+
+    @cached_property
+    def spacer(self) -> Polygon:
+        '''
+        Ink grown by half the minimal distance between two labels
+        (`LABEL_DISTANCE` paddings): two labels keep that distance iff their
+        spacers do not overlap. √2 paddings is the closest v1 lets two labels
+        come (pad boxes meeting at corner anchors, where the padding on the node
+        sides is p/√2). Pads would demand 2 paddings everywhere, which round pads
+        cannot meet at a shared node.
+
+        Returns
+        -------
+        spacer : Polygon
+            grown ink, relative to the drawing point
+        '''
+        return _grow(self.ink, LABEL_DISTANCE * self.padding / 2.0)
 
     @property
     def overflow_exp(self) -> Polygon:

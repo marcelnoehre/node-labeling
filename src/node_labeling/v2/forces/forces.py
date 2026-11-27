@@ -1,3 +1,4 @@
+import shapely
 import copy
 import numpy as np
 import networkx as nx
@@ -54,17 +55,20 @@ def optimize_overflow_labels(
     alpha_polygon = Polygon([G.nodes[n]['pos'] for n in alpha_shape])
     drawing_centroid = np.array([alpha_polygon.centroid.x, alpha_polygon.centroid.y])
     placed_polys = [
-        Polygon(candidate.pad_bbox_corners)
+        candidate.pad_poly
         for candidates in label_candidates.values()
         for candidate in candidates
     ]
     placed_union = unary_union(placed_polys + [alpha_polygon])
     ink_polys = [
-        Polygon(candidate.ink_bbox_corners)
+        candidate.ink_poly
         for candidates in label_candidates.values()
         for candidate in candidates
     ]
     placed_ink_union = unary_union(ink_polys + [alpha_polygon])
+    shapely.prepare(placed_union)
+    shapely.prepare(placed_ink_union)
+    ink_hulls = [ink.convex_hull for ink in ink_polys]
     alpha_nodes = [
         Point(G.nodes[nid]['pos']).buffer(0.15)
         for nid in alpha_shape    
@@ -87,7 +91,7 @@ def optimize_overflow_labels(
 
             # repulsion from label candidates
             threshold = max(ew, eh)
-            for ink in ink_polys + alpha_nodes:
+            for ink in ink_hulls + alpha_nodes:
                 p1, p2 = nearest_points(ink, pad_bbox_poly)
                 dist_to_ink = np.linalg.norm(np.array([p2.x - p1.x, p2.y - p1.y]))
 
@@ -180,7 +184,7 @@ def optimize_overflow_labels(
                     mag = (binder_threshold - dist_binder) * cfg.w_binder_dodge
                     force_vector += slide_dir * mag
 
-            for ink_poly in ink_polys + alpha_nodes:
+            for ink_poly in ink_hulls + alpha_nodes:
                 _apply_binder_repulsion(ink_poly, ink_poly.centroid)
 
             for o_lid, other_ol in overflow_candidates.items():

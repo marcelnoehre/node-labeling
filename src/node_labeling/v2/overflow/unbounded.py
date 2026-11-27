@@ -94,7 +94,7 @@ def _adjust_anchors(
             if tmp_exp_poly.intersects(alpha_polygon):
                 continue # overlaps graph
 
-            if any(tmp_exp_poly.intersects(Polygon(l[0].pad_bbox_corners)) for l in label_candidates.values() if l):
+            if any(tmp_exp_poly.intersects(l[0].pad_poly) for l in label_candidates.values() if l):
                 continue # overlaps with existing label
     
             others = [
@@ -155,7 +155,7 @@ def unbounded_overflow_labels(
     alpha_polygon = Polygon(alpha_pos)
     centroid = (alpha_polygon.centroid.x, alpha_polygon.centroid.y)
     placed_union = unary_union([
-        Polygon(candidate.exp_bbox_corners)
+        candidate.exp_poly
         for candidates in label_candidates.values()
         for candidate in candidates
     ]) if label_candidates else Polygon()

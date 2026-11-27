@@ -14,7 +14,7 @@ from node_labeling.v2.models.label_candidate import LabelCandidate
 
 def _ink_center(candidate: LabelCandidate) -> Tuple[float, float]:
     '''
-    Center of the ink box, i.e. where the text has to be drawn.
+    Drawing point of the text (the ink box center for box candidates).
 
     Parameters
     ----------
@@ -26,8 +26,7 @@ def _ink_center(candidate: LabelCandidate) -> Tuple[float, float]:
     center : Tuple[float, float]
         center of the ink box
     '''
-    (x0, y0), _, (x1, y1), _ = candidate.ink_bbox_corners
-    return (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    return candidate.center
 
 def _content_bounds(
         G: nx.Graph,
