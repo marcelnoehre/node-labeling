@@ -78,6 +78,7 @@ labels = label('path/to/graph.graphml', cfg=Config(top_k=200))
 | **Visualize** | `font_size` | Font size for labels |
 | | `k_rows` | Number of rows for layout |
 | | `max_row_chars` | Maximum characters per row |
+| | `padding_mm` | Label padding in mm (version 2). `None` scales 1.45 mm at 8 pt with the font size |
 | **Grid**| `grid_step` | Grid step size |
 | | `min_label_dist` | Minimum label distance from drawing |
 | | `max_label_dist` | Maximum label distance from drawing |

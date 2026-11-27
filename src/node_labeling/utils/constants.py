@@ -19,5 +19,8 @@ BINDER_DOT_GAP_MM: float = 0.2
 # rendering
 ROW_SKIP_PT: float = -2.0
 ROW_BREAK: str = rf'\\[{ROW_SKIP_PT:g}pt]'
+SHAPE_TOLERANCE_MM: float = 0.02
+PADDING_MM: float = 1.45
+PADDING_FONT_PT: float = 8.0
 LATEX_CHARS = frozenset('\\{_^')
 MATH_RE = re.compile(r'(\$[^$]+\$)')

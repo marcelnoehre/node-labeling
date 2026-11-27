@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, Optional
 
 from node_labeling.models.label_type import LabelType
 
@@ -20,6 +20,7 @@ class Config:
     font_size: str = r'\footnotesize'
     k_rows: int = 2
     max_row_chars: int = 10
+    padding_mm: Optional[float] = None
     # grid
     grid_step: float = 0.5
     min_label_dist: float = 1.0
